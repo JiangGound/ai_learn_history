@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import './App.css'
 
+const API_BASE = import.meta.env.VITE_API_BASE || ''
+
 // 历史人物分类映射
 const CATEGORY_MAP = {
   '孔子': '国内', '李白': '国内', '诸葛亮': '国内', '武则天': '国内',
@@ -68,14 +70,14 @@ function App() {
 
   // 加载历史会话列表
   const loadConversations = useCallback(() => {
-    fetch('/api/conversations')
+    fetch(`${API_BASE}/api/conversations`)
       .then(res => res.json())
       .then(data => setConversations(Array.isArray(data) ? data : []))
       .catch(() => {})
   }, [])
 
   useEffect(() => {
-    fetch('/api/characters')
+    fetch(`${API_BASE}/api/characters`)
       .then(res => res.json())
       .then(data => setCharacters(data))
     loadConversations()
@@ -96,7 +98,7 @@ function App() {
   // 加载历史会话
   const handleLoadConversation = async (conv) => {
     try {
-      const res = await fetch(`/api/conversations/${conv._id}`)
+      const res = await fetch(`${API_BASE}/api/conversations/${conv._id}`)
       const data = await res.json()
       const char = characters.find(c => c._id === data.characterId)
       if (char) setSelectedCharacter(char)
@@ -110,7 +112,7 @@ function App() {
   // 删除历史会话
   const handleDeleteConversation = async (e, convId) => {
     e.stopPropagation()
-    await fetch(`/api/conversations/${convId}`, { method: 'DELETE' })
+    await fetch(`${API_BASE}/api/conversations/${convId}`, { method: 'DELETE' })
     if (conversationId === convId) {
       setMessages([])
       setConversationId(null)
@@ -132,7 +134,7 @@ function App() {
     setInput('')
     setLoading(true)
     try {
-      const response = await fetch('/api/chat', {
+      const response = await fetch(`${API_BASE}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
