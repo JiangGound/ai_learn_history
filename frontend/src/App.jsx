@@ -234,25 +234,35 @@ function App() {
   }
 
   // TTS 朗读助手回和
-  const handleSpeak = (text, index) => {
-    // 停止任何正在播放的语音
-    window.speechSynthesis.cancel()
+  const handleSpeak = async (text, index) => {
+    window.speechSynthesis?.cancel()
     if (audioRef.current) { audioRef.current.pause(); audioRef.current = null }
     setPlayingVoiceIdx(null)
     if (playingIndex === index) {
       setPlayingIndex(null)
       return
     }
-    const cleanText = text.replace(/【[^】]*】/g, '').trim()
-    if (!cleanText) return
-    const utter = new SpeechSynthesisUtterance(cleanText)
-    utter.lang = 'zh-CN'
-    utter.rate = 0.95
-    utter.pitch = selectedCharacter?.gender === 'female' ? 1.2 : 0.9
-    utter.onend = () => setPlayingIndex(null)
-    utter.onerror = () => setPlayingIndex(null)
     setPlayingIndex(index)
-    window.speechSynthesis.speak(utter)
+    try {
+      const res = await fetch(`${API_BASE}/api/tts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, gender: selectedCharacter?.gender || 'male' })
+      })
+      const data = await res.json()
+      if (data.audio) {
+        const audio = new Audio(`data:audio/mpeg;base64,${data.audio}`)
+        audioRef.current = audio
+        audio.onended = () => setPlayingIndex(null)
+        audio.onerror = () => setPlayingIndex(null)
+        audio.play()
+      } else {
+        setPlayingIndex(null)
+      }
+    } catch (e) {
+      console.error('TTS 失败', e)
+      setPlayingIndex(null)
+    }
   }
 
   const handleSend = async () => {

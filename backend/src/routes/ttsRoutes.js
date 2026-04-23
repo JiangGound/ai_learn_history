@@ -1,13 +1,47 @@
 const express = require('express');
 const router = express.Router();
-const https = require('https');
-const http = require('http');
+const { MsEdgeTTS, OUTPUT_FORMAT } = require('msedge-tts');
 
-// 男/女音色映射（CosyVoice）
+// 男/女音色映射（微软 Edge 神经网络 TTS）
 const VOICE_MAP = {
-  male: 'longxiaochun',   // 男声：稳重磁性
-  female: 'longxiaoxia',  // 女声：温柔清澈
+  male: 'zh-CN-YunxiNeural',      // 男声：自然流畅
+  female: 'zh-CN-XiaoxiaoNeural', // 女声：温柔自然
 };
+
+// 过滤掉 【神态描写】 段落，只保留正文供 TTS 朗读
+function stripActions(text) {
+  return text.replace(/【[^】]*】/g, '').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+// POST /api/tts  { text, gender }
+router.post('/', async (req, res) => {
+  const { text, gender = 'male' } = req.body;
+  if (!text) return res.status(400).json({ error: '缺少 text 参数' });
+
+  const cleanText = stripActions(text);
+  if (!cleanText) return res.status(400).json({ error: '文本为空' });
+
+  const voice = VOICE_MAP[gender] || VOICE_MAP.male;
+
+  try {
+    const tts = new MsEdgeTTS();
+    await tts.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_96KBITRATE_MONO_MP3);
+    const chunks = [];
+    const { audioStream } = tts.toStream(cleanText);
+    await new Promise((resolve, reject) => {
+      audioStream.on('data', c => chunks.push(c));
+      audioStream.on('end', resolve);
+      audioStream.on('error', reject);
+    });
+    const audio = Buffer.concat(chunks).toString('base64');
+    res.json({ audio });
+  } catch (e) {
+    console.error('TTS 错误:', e.message);
+    res.status(500).json({ error: 'TTS 服务异常', detail: e.message });
+  }
+});
+
+module.exports = router;
 
 // 过滤掉 【神态描写】 段落，只保留正文供 TTS 朗读
 function stripActions(text) {
