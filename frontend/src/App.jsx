@@ -55,9 +55,12 @@ function App() {
   const [initLoadingId, setInitLoadingId] = useState(null)
   // 语音相关
   const [recording, setRecording] = useState(false)
-  const [playingIndex, setPlayingIndex] = useState(null)
+  const [playingIndex, setPlayingIndex] = useState(null)   // TTS 索引
+  const [playingVoiceIdx, setPlayingVoiceIdx] = useState(null) // 语音消息索引
   const mediaRecorderRef = useRef(null)
   const audioChunksRef = useRef([])
+  const recordStartRef = useRef(null)
+  const handleVoiceSendRef = useRef(null)
   const audioRef = useRef(null)
   const messagesEndRef = useRef(null)
 
@@ -140,23 +143,23 @@ function App() {
     )
   }
 
-  // 语音录入
+  // 语音录入（按住录音，松开直接发送语音消息）
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       audioChunksRef.current = []
-      const recorder = new MediaRecorder(stream)
+      recordStartRef.current = Date.now()
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm'
+                     : MediaRecorder.isTypeSupported('audio/mp4') ? 'audio/mp4' : ''
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : {})
       recorder.ondataavailable = e => { if (e.data.size > 0) audioChunksRef.current.push(e.data) }
-      recorder.onstop = async () => {
+      recorder.onstop = () => {
         stream.getTracks().forEach(t => t.stop())
-        const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' })
-        const formData = new FormData()
-        formData.append('audio', blob, 'recording.webm')
-        try {
-          const res = await fetch(`${API_BASE}/api/asr`, { method: 'POST', body: formData })
-          const data = await res.json()
-          if (data.text) setInput(prev => prev + data.text)
-        } catch (e) { console.error('ASR 失败', e) }
+        const duration = Math.max(1, Math.round((Date.now() - recordStartRef.current) / 1000))
+        const blob = new Blob(audioChunksRef.current, { type: mimeType || 'audio/webm' })
+        const reader = new FileReader()
+        reader.onloadend = () => handleVoiceSendRef.current?.(blob, reader.result, duration)
+        reader.readAsDataURL(blob)
       }
       mediaRecorderRef.current = recorder
       recorder.start()
@@ -171,13 +174,69 @@ function App() {
     setRecording(false)
   }
 
-  // TTS 朗读
-  const handleSpeak = async (text, index) => {
-    // 停止当前播放
-    if (audioRef.current) {
-      audioRef.current.pause()
-      audioRef.current = null
+  // 语音消息发送（异步，始终指向最新闭包）
+  handleVoiceSendRef.current = async (blob, audioDataUrl, duration) => {
+    if (!selectedCharacter || loading) return
+    const priorMessages = messages
+    const voiceMsg = { role: 'user', content: '正在识别语音…', type: 'voice', audioDataUrl, duration }
+    setMessages(prev => [...prev, voiceMsg])
+    setLoading(true)
+    try {
+      const formData = new FormData()
+      formData.append('audio', blob, blob.type.includes('mp4') ? 'recording.mp4' : 'recording.webm')
+      const asrRes = await fetch(`${API_BASE}/api/asr`, { method: 'POST', body: formData })
+      const asrData = await asrRes.json()
+      const asrText = asrData.text?.trim() || ''
+      setMessages(prev => {
+        const idx = [...prev].reverse().findIndex(m => m.type === 'voice')
+        if (idx < 0) return prev
+        const i = prev.length - 1 - idx
+        return prev.map((m, j) => j === i ? { ...m, content: asrText || '[未能识别]' } : m)
+      })
+      if (!asrText) { setLoading(false); return }
+      const response = await fetch(`${API_BASE}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          characterId: selectedCharacter._id,
+          message: asrText,
+          conversationId,
+          conversationHistory: priorMessages.map(m => ({ role: m.role, content: m.content }))
+        })
+      })
+      const data = await response.json()
+      setMessages(prev => [...prev, { role: 'assistant', content: data.response }])
+      setConversationId(data.conversationId)
+      loadConversations()
+    } catch (err) {
+      setMessages(prev => {
+        const idx = [...prev].reverse().findIndex(m => m.type === 'voice')
+        if (idx < 0) return prev
+        const i = prev.length - 1 - idx
+        return prev.map((m, j) => j === i ? { ...m, content: '[语音发送失败]' } : m)
+      })
+    } finally {
+      setLoading(false)
     }
+  }
+
+  // 播放语音消息
+  const handlePlayVoice = (audioDataUrl, index) => {
+    if (audioRef.current) { audioRef.current.pause(); audioRef.current = null }
+    if (playingVoiceIdx === index) { setPlayingVoiceIdx(null); return }
+    const audio = new Audio(audioDataUrl)
+    audioRef.current = audio
+    setPlayingVoiceIdx(index)
+    setPlayingIndex(null)
+    audio.onended = () => setPlayingVoiceIdx(null)
+    audio.onerror = () => setPlayingVoiceIdx(null)
+    audio.play()
+  }
+
+  // TTS 朗读助手回和
+  const handleSpeak = async (text, index) => {
+    if (audioRef.current) { audioRef.current.pause(); audioRef.current = null }
+    setPlayingVoiceIdx(null)
     if (playingIndex === index) {
       setPlayingIndex(null)
       return
@@ -447,13 +506,46 @@ function App() {
                       <Avatar name={selectedCharacter.name} className="w-8 h-8 text-xs mt-0.5 shrink-0" />
                     )}
                     <div className="flex flex-col gap-1 max-w-[72%]">
-                      <div className={`px-4 py-2.5 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap ${
-                        message.role === 'user'
-                          ? 'bg-amber-500 text-white rounded-tr-none'
-                          : 'bg-amber-50 text-gray-800 border border-amber-100 rounded-tl-none'
-                      }`}>
-                        {message.role === 'assistant' ? renderContent(message.content) : message.content}
-                      </div>
+                      {/* 语音消息气泡 */}
+                      {message.type === 'voice' ? (
+                        <>
+                          <div
+                            onClick={() => message.audioDataUrl && handlePlayVoice(message.audioDataUrl, index)}
+                            className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl rounded-tr-none select-none ${
+                              message.audioDataUrl ? 'cursor-pointer' : 'cursor-default'
+                            } bg-amber-500 text-white`}
+                          >
+                            <span className="text-base">{playingVoiceIdx === index ? '⏹' : '🎙️'}</span>
+                            <div className="flex gap-[3px] items-end h-4">
+                              {[5,9,13,9,5,11,7,13,9,5].map((h, i) => (
+                                <div key={i}
+                                  className={`w-[3px] rounded-sm bg-white/80 transition-all ${
+                                    playingVoiceIdx === index ? 'animate-pulse' : ''
+                                  }`}
+                                  style={{ height: h }}
+                                />
+                              ))}
+                            </div>
+                            {message.duration && (
+                              <span className="text-xs opacity-70 ml-1">{message.duration}″</span>
+                            )}
+                          </div>
+                          {message.content === '正在识别语音…' ? (
+                            <div className="text-xs text-amber-400 animate-pulse text-right">{message.content}</div>
+                          ) : (
+                            <div className="text-xs text-gray-400 text-right">{message.content}</div>
+                          )}
+                        </>
+                      ) : (
+                        /* 文字消息气泡 */
+                        <div className={`px-4 py-2.5 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap ${
+                          message.role === 'user'
+                            ? 'bg-amber-500 text-white rounded-tr-none'
+                            : 'bg-amber-50 text-gray-800 border border-amber-100 rounded-tl-none'
+                        }`}>
+                          {message.role === 'assistant' ? renderContent(message.content) : message.content}
+                        </div>
+                      )}
                       {message.role === 'assistant' && (
                         <button
                           onClick={() => handleSpeak(message.content, index)}
@@ -482,40 +574,41 @@ function App() {
               {/* 输入框 */}
               <div className="px-5 py-4 border-t border-amber-100">
                 <div className="flex gap-2">
-                  {/* 语音录入按钮 */}
+                  {/* 语音按钮：按住录音，松开发送语音消息 */}
                   <button
                     onMouseDown={startRecording}
                     onMouseUp={stopRecording}
                     onTouchStart={e => { e.preventDefault(); startRecording() }}
                     onTouchEnd={e => { e.preventDefault(); stopRecording() }}
+                    onMouseLeave={() => { if (recording) stopRecording() }}
                     disabled={loading}
-                    title="按住录音"
-                    className={`px-3 py-2.5 rounded-xl border text-base transition-colors ${
+                    title="按住录音，松开发送"
+                    className={`px-3 py-2.5 rounded-xl border text-base transition-all ${
                       recording
-                        ? 'bg-red-500 border-red-500 text-white animate-pulse'
+                        ? 'bg-red-500 border-red-500 text-white scale-110'
                         : 'bg-white border-amber-200 hover:border-amber-400 text-amber-500'
-                    } disabled:opacity-40`}
+                    } disabled:opacity-40 select-none`}
                   >
-                    🎙️
+                    {recording ? <span className="animate-pulse">⏺</span> : '🎙️'}
                   </button>
                   <input
                     type="text"
                     value={input}
                     onChange={e => setInput(e.target.value)}
                     onKeyDown={e => e.key === 'Enter' && !e.shiftKey && handleSend()}
-                    placeholder={recording ? '正在录音…' : `问问 ${selectedCharacter.name}…`}
-                    disabled={loading}
+                    placeholder={recording ? '••• 正在录音，松开发送 •••' : `输入文字或按住🎙️录音…`}
+                    disabled={loading || recording}
                     className="flex-1 bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5 text-sm text-gray-800 placeholder-amber-300 focus:outline-none focus:ring-2 focus:ring-amber-400 focus:border-transparent disabled:opacity-50"
                   />
                   <button
                     onClick={handleSend}
-                    disabled={loading || !input.trim()}
+                    disabled={loading || !input.trim() || recording}
                     className="bg-amber-500 hover:bg-amber-600 disabled:bg-amber-200 text-white px-5 py-2.5 rounded-xl text-sm font-semibold transition-colors"
                   >
                     发送
                   </button>
                 </div>
-                <p className="text-xs text-amber-300 mt-1.5 text-right">按住🎙️录音 · Enter 发送</p>
+                <p className="text-xs text-amber-300 mt-1.5 text-right">按住🎙️发送语音 · Enter 发送文字</p>
               </div>
             </div>
           )}

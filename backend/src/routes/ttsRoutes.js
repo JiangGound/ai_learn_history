@@ -23,8 +23,8 @@ router.post('/', async (req, res) => {
 
   const payload = JSON.stringify({
     model: 'cosyvoice-v1',
-    input: { text: cleanText },
-    parameters: { voice, format: 'mp3', sample_rate: 22050 }
+    input: { text: cleanText, voice },
+    parameters: { format: 'mp3', sample_rate: 22050 }
   });
 
   const options = {
