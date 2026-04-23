@@ -35,8 +35,8 @@ function httpsJSON(options, body) {
 function createTTSTask(cleanText, voice) {
   const payload = JSON.stringify({
     model: 'cosyvoice-v1',
-    input: { text: cleanText, voice },
-    parameters: { format: 'mp3', sample_rate: 22050 }
+    input: { text: cleanText },
+    parameters: { voice, format: 'mp3', sample_rate: 22050 }
   });
   return httpsJSON({
     hostname: 'dashscope.aliyuncs.com',
