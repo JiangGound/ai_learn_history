@@ -11,7 +11,7 @@ const characterSchema = new mongoose.Schema({
   },
   background: {
     type: String,
-    required: true
+    default: ''
   },
   works: {
     type: [String],
@@ -19,7 +19,11 @@ const characterSchema = new mongoose.Schema({
   },
   knowledgeBoundary: {
     type: String,
-    required: true
+    default: ''
+  },
+  dynasty: {
+    type: String,
+    default: ''
   }
 });
 

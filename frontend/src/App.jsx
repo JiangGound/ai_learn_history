@@ -3,19 +3,12 @@ import './App.css'
 
 const API_BASE = import.meta.env.VITE_API_BASE || ''
 
-// 历史人物分类映射
-const CATEGORY_MAP = {
-  '孔子': '国内', '李白': '国内', '诸葛亮': '国内', '武则天': '国内',
-  '苏轼': '国内', '岳飞': '国内', '秦始皇': '国内', '曹操': '国内',
-  '屈原': '国内', '王阳明': '国内', '郑和': '国内', '张衡': '国内',
-  '牛顿': '国外', '爱因斯坦': '国外', '达芬奇': '国外', '莎士比亚': '国外',
-  '拿破仑': '国外', '苏格拉底': '国外', '亚里士多德': '国外', '柏拉图': '国外',
-  '伽利略': '国外', '马克思': '国外', '林肯': '国外', '丘吉尔': '国外',
+// 根据 dynasty 字段判断国内/国外
+function getCategory(character) {
+  return character.dynasty ? '国内' : '国外'
 }
 
-function getCategory(name) {
-  return CATEGORY_MAP[name] || '国外'
-}
+const DYNASTIES = ['全部', '先秦', '秦汉', '三国', '两晋南北朝', '隋唐', '宋', '元', '明', '清', '近代']
 
 // 历史人物头像映射（Wikimedia Commons）
 const AVATAR_MAP = {
@@ -65,6 +58,8 @@ function App() {
   const [conversations, setConversations] = useState([])
   const [searchQuery, setSearchQuery] = useState('')
   const [categoryFilter, setCategoryFilter] = useState('全部')
+  const [dynastyFilter, setDynastyFilter] = useState('全部')
+  const [initLoadingId, setInitLoadingId] = useState(null)
   const messagesEndRef = useRef(null)
 
   const loadConversations = useCallback(() => {
@@ -85,7 +80,22 @@ function App() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, loading])
 
-  const handleCharacterSelect = (character) => {
+  const handleCharacterSelect = async (char) => {
+    let character = char
+    // 需要懒加载详细资料
+    if (!character.background || character.background === '-') {
+      setInitLoadingId(character._id)
+      try {
+        const res = await fetch(`${API_BASE}/api/characters/${character._id}/init`, { method: 'POST' })
+        if (res.ok) {
+          character = await res.json()
+          setCharacters(prev => prev.map(c => c._id === character._id ? character : c))
+        }
+      } catch (e) {
+        console.error('初始化人物失败', e)
+      }
+      setInitLoadingId(null)
+    }
     setSelectedCharacter(character)
     setMessages([])
     setConversationId(null)
@@ -152,10 +162,12 @@ function App() {
 
   // ── 人物选择页 ──────────────────────────────────────────
   if (page === 'characters') {
-    const filtered = characters.filter(c =>
-      (categoryFilter === '全部' || getCategory(c.name) === categoryFilter) &&
-      (searchQuery === '' || c.name.includes(searchQuery) || c.description.includes(searchQuery))
-    )
+    const filtered = characters.filter(c => {
+      if (categoryFilter !== '全部' && getCategory(c) !== categoryFilter) return false
+      if (categoryFilter === '国内' && dynastyFilter !== '全部' && c.dynasty !== dynastyFilter) return false
+      if (searchQuery && !c.name.includes(searchQuery) && !(c.description || '').includes(searchQuery)) return false
+      return true
+    })
     return (
       <div className="min-h-screen bg-amber-50 flex flex-col">
         <header className="bg-white border-b border-amber-200 shadow-sm">
@@ -176,34 +188,52 @@ function App() {
         </header>
 
         <div className="max-w-5xl mx-auto w-full px-6 py-6 flex-1">
-          {/* 搜索和筛选 */}
-          <div className="flex gap-3 mb-6">
-            <div className="relative flex-1 max-w-sm">
-              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-amber-300">🔍</span>
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={e => setSearchQuery(e.target.value)}
-                placeholder="搜索人物…"
-                className="w-full pl-9 pr-4 py-2.5 text-sm border border-amber-200 rounded-xl bg-white text-gray-700 placeholder-amber-300 focus:outline-none focus:ring-2 focus:ring-amber-300"
-              />
+            <div className="flex gap-3 mb-6 flex-wrap">
+              <div className="relative flex-1 min-w-[180px] max-w-sm">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-amber-300">🔍</span>
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={e => setSearchQuery(e.target.value)}
+                  placeholder="搜索人物…"
+                  className="w-full pl-9 pr-4 py-2.5 text-sm border border-amber-200 rounded-xl bg-white text-gray-700 placeholder-amber-300 focus:outline-none focus:ring-2 focus:ring-amber-300"
+                />
+              </div>
+              <div className="flex gap-1.5 flex-wrap">
+                {['全部', '国内', '国外'].map(cat => (
+                  <button
+                    key={cat}
+                    onClick={() => { setCategoryFilter(cat); setDynastyFilter('全部') }}
+                    className={`px-4 py-2 text-sm rounded-xl font-medium transition-colors border ${
+                      categoryFilter === cat
+                        ? 'bg-amber-400 text-white border-amber-400'
+                        : 'bg-white text-amber-600 border-amber-200 hover:border-amber-400'
+                    }`}
+                  >
+                    {cat}
+                  </button>
+                ))}
+              </div>
             </div>
-            <div className="flex gap-1.5">
-              {['全部', '国内', '国外'].map(cat => (
-                <button
-                  key={cat}
-                  onClick={() => setCategoryFilter(cat)}
-                  className={`px-4 py-2 text-sm rounded-xl font-medium transition-colors border ${
-                    categoryFilter === cat
-                      ? 'bg-amber-400 text-white border-amber-400'
-                      : 'bg-white text-amber-600 border-amber-200 hover:border-amber-400'
-                  }`}
-                >
-                  {cat}
-                </button>
-              ))}
-            </div>
-          </div>
+
+            {/* 朝代子筛选（仅国内显示） */}
+            {categoryFilter === '国内' && (
+              <div className="flex gap-1.5 flex-wrap mb-4">
+                {DYNASTIES.map(d => (
+                  <button
+                    key={d}
+                    onClick={() => setDynastyFilter(d)}
+                    className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-colors border ${
+                      dynastyFilter === d
+                        ? 'bg-amber-600 text-white border-amber-600'
+                        : 'bg-white text-amber-700 border-amber-200 hover:border-amber-500'
+                    }`}
+                  >
+                    {d}
+                  </button>
+                ))}
+              </div>
+            )}
 
           {/* 人物卡片网格 */}
           {filtered.length === 0 ? (
@@ -214,8 +244,17 @@ function App() {
                 <button
                   key={character._id}
                   onClick={() => handleCharacterSelect(character)}
-                  className="bg-white border border-amber-100 hover:border-amber-400 hover:shadow-md rounded-2xl p-4 flex flex-col items-center gap-3 text-center transition-all group"
+                  disabled={initLoadingId !== null}
+                  className="relative bg-white border border-amber-100 hover:border-amber-400 hover:shadow-md rounded-2xl p-4 flex flex-col items-center gap-3 text-center transition-all group disabled:opacity-70"
                 >
+                  {initLoadingId === character._id && (
+                    <div className="absolute inset-0 bg-white/80 rounded-2xl flex items-center justify-center z-10">
+                      <div className="flex flex-col items-center gap-1">
+                        <div className="w-6 h-6 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
+                        <span className="text-xs text-amber-500">加载中…</span>
+                      </div>
+                    </div>
+                  )}
                   <Avatar name={character.name} className="w-16 h-16 text-2xl group-hover:scale-105 transition-transform" />
                   <div>
                     <div className="font-semibold text-gray-800 text-sm">{character.name}</div>
