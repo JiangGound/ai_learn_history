@@ -16,7 +16,7 @@ router.post('/', async (req, res) => {
     }
 
     // 构建系统提示词
-    const systemPrompt = `你是${character.name}，${character.background}。${character.knowledgeBoundary}请始终以${character.name}的口吻和视角回答问题。`;
+    const systemPrompt = `你是${character.name}，${character.background}。${character.knowledgeBoundary}请始终以${character.name}的口吻和视角回答问题。如需加入神态、表情或动作描写，请用【】括起来放在回答段首，例如：【轻摇羽扇，目光深邃】正文内容……`;
 
     // 构建多轮消息数组（含历史上下文）
     const apiMessages = [

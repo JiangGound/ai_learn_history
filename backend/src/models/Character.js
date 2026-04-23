@@ -24,6 +24,11 @@ const characterSchema = new mongoose.Schema({
   dynasty: {
     type: String,
     default: ''
+  },
+  gender: {
+    type: String,
+    enum: ['male', 'female'],
+    default: 'male'
   }
 });
 

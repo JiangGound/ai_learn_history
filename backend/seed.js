@@ -2,6 +2,11 @@ require('dotenv').config();
 const mongoose = require('mongoose');
 const Character = require('./src/models/Character');
 
+// 女性人物列表（其余默认 male）
+const FEMALE_NAMES = new Set([
+  '武则天', '李清照', '慈禧', '圣女贞德', '南丁格尔', '居里夫人', '特蕾莎修女',
+]);
+
 // 轻量数据：仅含姓名、简介、朝代（dynasty）
 // background / works / knowledgeBoundary 留空，用户首次点击时由 AI 动态生成并永久缓存
 const characters = [
@@ -250,10 +255,18 @@ async function seed() {
       if (existing) {
         // 已存在：仅补充 dynasty 字段，不覆盖已有 background 等数据
         if (!existing.dynasty && data.dynasty !== undefined) {
-          await Character.updateOne({ name: data.name }, { $set: { dynasty: data.dynasty } });
+          await Character.updateOne({ name: data.name }, {
+            $set: {
+              dynasty: data.dynasty,
+              gender: FEMALE_NAMES.has(data.name) ? 'female' : 'male'
+            }
+          });
           console.log(`更新朝代: ${data.name} → ${data.dynasty || '(国外)'}`);
           updated++;
         } else {
+          // 已有 dynasty，补充 gender
+          const correctGender = FEMALE_NAMES.has(data.name) ? 'female' : 'male';
+          await Character.updateOne({ name: data.name }, { $set: { gender: correctGender } });
           skipped++;
         }
       } else {
@@ -262,6 +275,7 @@ async function seed() {
           name: data.name,
           description: data.description,
           dynasty: data.dynasty || '',
+          gender: FEMALE_NAMES.has(data.name) ? 'female' : 'male',
           background: '-',
           works: [],
           knowledgeBoundary: '-',

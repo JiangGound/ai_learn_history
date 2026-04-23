@@ -60,6 +60,12 @@ function App() {
   const [categoryFilter, setCategoryFilter] = useState('全部')
   const [dynastyFilter, setDynastyFilter] = useState('全部')
   const [initLoadingId, setInitLoadingId] = useState(null)
+  // 语音相关
+  const [recording, setRecording] = useState(false)
+  const [playingIndex, setPlayingIndex] = useState(null)
+  const mediaRecorderRef = useRef(null)
+  const audioChunksRef = useRef([])
+  const audioRef = useRef(null)
   const messagesEndRef = useRef(null)
 
   const loadConversations = useCallback(() => {
@@ -129,6 +135,81 @@ function App() {
   const handleNewConversation = () => {
     setMessages([])
     setConversationId(null)
+  }
+
+  // 渲染消息：将【神态描写】显示为斜体灰色，其余正常
+  function renderContent(text) {
+    const parts = text.split(/(【[^】]*】)/g)
+    return parts.map((part, i) =>
+      /^【/.test(part)
+        ? <em key={i} className="not-italic text-amber-600/70 text-xs block mb-1">{part}</em>
+        : <span key={i}>{part}</span>
+    )
+  }
+
+  // 语音录入
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      audioChunksRef.current = []
+      const recorder = new MediaRecorder(stream)
+      recorder.ondataavailable = e => { if (e.data.size > 0) audioChunksRef.current.push(e.data) }
+      recorder.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop())
+        const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' })
+        const formData = new FormData()
+        formData.append('audio', blob, 'recording.webm')
+        try {
+          const res = await fetch(`${API_BASE}/api/asr`, { method: 'POST', body: formData })
+          const data = await res.json()
+          if (data.text) setInput(prev => prev + data.text)
+        } catch (e) { console.error('ASR 失败', e) }
+      }
+      mediaRecorderRef.current = recorder
+      recorder.start()
+      setRecording(true)
+    } catch (e) {
+      alert('无法访问麦克风，请检查浏览器权限')
+    }
+  }
+
+  const stopRecording = () => {
+    mediaRecorderRef.current?.stop()
+    setRecording(false)
+  }
+
+  // TTS 朗读
+  const handleSpeak = async (text, index) => {
+    // 停止当前播放
+    if (audioRef.current) {
+      audioRef.current.pause()
+      audioRef.current = null
+    }
+    if (playingIndex === index) {
+      setPlayingIndex(null)
+      return
+    }
+    setPlayingIndex(index)
+    try {
+      const res = await fetch(`${API_BASE}/api/tts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, gender: selectedCharacter?.gender || 'male' })
+      })
+      const data = await res.json()
+      if (data.audio) {
+        const audio = new Audio(`data:audio/mp3;base64,${data.audio}`)
+        audioRef.current = audio
+        audio.onended = () => setPlayingIndex(null)
+        audio.onerror = () => setPlayingIndex(null)
+        audio.play()
+      } else {
+        setPlayingIndex(null)
+      }
+    } catch (e) {
+      console.error('TTS 失败', e)
+      setPlayingIndex(null)
+    }
   }
 
   const handleSend = async () => {
@@ -372,12 +453,25 @@ function App() {
                     {message.role === 'assistant' && (
                       <Avatar name={selectedCharacter.name} className="w-8 h-8 text-xs mt-0.5 shrink-0" />
                     )}
-                    <div className={`max-w-[72%] px-4 py-2.5 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap ${
-                      message.role === 'user'
-                        ? 'bg-amber-500 text-white rounded-tr-none'
-                        : 'bg-amber-50 text-gray-800 border border-amber-100 rounded-tl-none'
-                    }`}>
-                      {message.content}
+                    <div className="flex flex-col gap-1 max-w-[72%]">
+                      <div className={`px-4 py-2.5 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap ${
+                        message.role === 'user'
+                          ? 'bg-amber-500 text-white rounded-tr-none'
+                          : 'bg-amber-50 text-gray-800 border border-amber-100 rounded-tl-none'
+                      }`}>
+                        {message.role === 'assistant' ? renderContent(message.content) : message.content}
+                      </div>
+                      {message.role === 'assistant' && (
+                        <button
+                          onClick={() => handleSpeak(message.content, index)}
+                          className="self-start text-xs text-amber-400 hover:text-amber-600 flex items-center gap-1 transition-colors"
+                          title={playingIndex === index ? '停止朗读' : '朗读'}
+                        >
+                          {playingIndex === index
+                            ? <><span className="animate-pulse">■</span> 停止</>
+                            : <>🔊 朗读</>}
+                        </button>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -395,12 +489,28 @@ function App() {
               {/* 输入框 */}
               <div className="px-5 py-4 border-t border-amber-100">
                 <div className="flex gap-2">
+                  {/* 语音录入按钮 */}
+                  <button
+                    onMouseDown={startRecording}
+                    onMouseUp={stopRecording}
+                    onTouchStart={e => { e.preventDefault(); startRecording() }}
+                    onTouchEnd={e => { e.preventDefault(); stopRecording() }}
+                    disabled={loading}
+                    title="按住录音"
+                    className={`px-3 py-2.5 rounded-xl border text-base transition-colors ${
+                      recording
+                        ? 'bg-red-500 border-red-500 text-white animate-pulse'
+                        : 'bg-white border-amber-200 hover:border-amber-400 text-amber-500'
+                    } disabled:opacity-40`}
+                  >
+                    🎙️
+                  </button>
                   <input
                     type="text"
                     value={input}
                     onChange={e => setInput(e.target.value)}
                     onKeyDown={e => e.key === 'Enter' && !e.shiftKey && handleSend()}
-                    placeholder={`问问 ${selectedCharacter.name}…`}
+                    placeholder={recording ? '正在录音…' : `问问 ${selectedCharacter.name}…`}
                     disabled={loading}
                     className="flex-1 bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5 text-sm text-gray-800 placeholder-amber-300 focus:outline-none focus:ring-2 focus:ring-amber-400 focus:border-transparent disabled:opacity-50"
                   />
@@ -412,7 +522,7 @@ function App() {
                     发送
                   </button>
                 </div>
-                <p className="text-xs text-amber-300 mt-1.5 text-right">Enter 发送</p>
+                <p className="text-xs text-amber-300 mt-1.5 text-right">按住🎙️录音 · Enter 发送</p>
               </div>
             </div>
           )}
