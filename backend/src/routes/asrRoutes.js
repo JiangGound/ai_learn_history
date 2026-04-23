@@ -96,7 +96,7 @@ function pollTask(taskId, timeoutSec) {
             } else if (status === 'FAILED') {
               reject(new Error('任务失败: ' + data));
             } else {
-              setTimeout(check, 1500);
+              setTimeout(check, 500);
             }
           } catch (e) { reject(e); }
         });
