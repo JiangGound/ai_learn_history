@@ -57,10 +57,20 @@ function App() {
   const [recording, setRecording] = useState(false)
   const [playingIndex, setPlayingIndex] = useState(null)   // TTS 索引
   const [playingVoiceIdx, setPlayingVoiceIdx] = useState(null) // 语音消息索引
+  // 通话模式
+  const [callMode, setCallMode] = useState(false)
+  const [callPhase, setCallPhase] = useState('idle') // 'greeting'|'listening'|'processing'|'speaking'
+  const [callSeconds, setCallSeconds] = useState(0)
+  const [callTranscript, setCallTranscript] = useState([])
   const mediaRecorderRef = useRef(null)
   const audioChunksRef = useRef([])
   const recordStartRef = useRef(null)
   const handleVoiceSendRef = useRef(null)
+  const callActiveRef = useRef(false)
+  const callStreamRef = useRef(null)
+  const callTimerRef = useRef(null)
+  const audioCtxRef = useRef(null)
+  const callSessionRef = useRef({})
   const audioRef = useRef(null)
   const messagesEndRef = useRef(null)
 
@@ -174,6 +184,9 @@ function App() {
     setRecording(false)
   }
 
+  // 通话模式：始终持有最新状态（解决异步闭包问题）
+  callSessionRef.current = { messages, conversationId, selectedCharacter }
+
   // 语音消息发送（异步，始终指向最新闭包）
   handleVoiceSendRef.current = async (blob, audioDataUrl, duration) => {
     if (!selectedCharacter || loading) return
@@ -262,6 +275,162 @@ function App() {
     } catch (e) {
       console.error('TTS 失败', e)
       setPlayingIndex(null)
+    }
+  }
+
+  // ── 通话模式 ─────────────────────────────────────────
+
+  const endCall = () => {
+    callActiveRef.current = false
+    clearInterval(callTimerRef.current)
+    callStreamRef.current?.getTracks().forEach(t => t.stop())
+    callStreamRef.current = null
+    if (audioRef.current) { audioRef.current.pause(); audioRef.current = null }
+    try { audioCtxRef.current?.close() } catch (_) {}
+    audioCtxRef.current = null
+    if (mediaRecorderRef.current?.state !== 'inactive') {
+      try { mediaRecorderRef.current?.stop() } catch (_) {}
+    }
+    setCallMode(false)
+    setCallPhase('idle')
+  }
+
+  // 通话中 TTS 朗读，返回 Promise（说完才 resolve）
+  const callSpeak = (text) => new Promise(async (resolve) => {
+    if (!callActiveRef.current) return resolve()
+    setCallPhase('speaking')
+    const clean = text.replace(/【[^】]*】/g, '').trim()
+    if (!clean) return resolve()
+    try {
+      const gender = callSessionRef.current.selectedCharacter?.gender || 'male'
+      const res = await fetch(`${API_BASE}/api/tts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: clean, gender })
+      })
+      const data = await res.json()
+      if (data.audio && callActiveRef.current) {
+        const audio = new Audio(`data:audio/mpeg;base64,${data.audio}`)
+        audioRef.current = audio
+        audio.onended = () => { audioRef.current = null; resolve() }
+        audio.onerror = () => { audioRef.current = null; resolve() }
+        audio.play()
+      } else resolve()
+    } catch { resolve() }
+  })
+
+  // 通话中处理录音：ASR → Chat → TTS → 重新聆听
+  const callProcess = async (blob) => {
+    if (!callActiveRef.current) return
+    setCallPhase('processing')
+    const session = callSessionRef.current
+    try {
+      const formData = new FormData()
+      formData.append('audio', blob, blob.type.includes('mp4') ? 'recording.mp4' : 'recording.webm')
+      const asrRes = await fetch(`${API_BASE}/api/asr`, { method: 'POST', body: formData })
+      const asrData = await asrRes.json()
+      const userText = asrData.text?.trim() || ''
+      if (!userText || !callActiveRef.current) {
+        if (callActiveRef.current) callListen(callStreamRef.current)
+        return
+      }
+      setCallTranscript(prev => [...prev, { role: 'user', text: userText }])
+      setMessages(prev => [...prev, { role: 'user', content: userText }])
+      const chatRes = await fetch(`${API_BASE}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          characterId: session.selectedCharacter._id,
+          message: userText,
+          conversationId: session.conversationId,
+          conversationHistory: session.messages.map(m => ({ role: m.role, content: m.content }))
+        })
+      })
+      const chatData = await chatRes.json()
+      const aiText = chatData.response || ''
+      if (!callActiveRef.current) return
+      setMessages(prev => [...prev, { role: 'assistant', content: aiText }])
+      setConversationId(chatData.conversationId)
+      setCallTranscript(prev => [...prev, { role: 'assistant', text: aiText }])
+      loadConversations()
+      await callSpeak(aiText)
+      if (callActiveRef.current) callListen(callStreamRef.current)
+    } catch {
+      if (callActiveRef.current) callListen(callStreamRef.current)
+    }
+  }
+
+  // 通话中开始聆听，静音检测自动触发
+  const callListen = (stream) => {
+    if (!callActiveRef.current || !stream) return
+    setCallPhase('listening')
+    const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/mp4'
+    const chunks = []
+    let stopped = false
+    const recorder = new MediaRecorder(stream, { mimeType })
+    mediaRecorderRef.current = recorder
+    recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data) }
+    recorder.onstop = () => {
+      if (stopped) return
+      stopped = true
+      if (!callActiveRef.current) return
+      if (chunks.length === 0) { callListen(stream); return }
+      callProcess(new Blob(chunks, { type: mimeType }))
+    }
+    recorder.start(100)
+
+    // 静音检测
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)()
+      audioCtxRef.current = ctx
+      const analyser = ctx.createAnalyser()
+      analyser.fftSize = 512
+      ctx.createMediaStreamSource(stream).connect(analyser)
+      const data = new Uint8Array(analyser.frequencyBinCount)
+      const recordStart = Date.now()
+      const MIN_MS = 1200   // 最短录音 1.2s
+      const THRESHOLD = 12  // 音量阈值
+      const SILENCE_MS = 2000 // 2s 静音触发
+      let silenceStart = null
+      let hasSpeech = false
+      const check = () => {
+        if (!callActiveRef.current || recorder.state === 'inactive') return
+        analyser.getByteFrequencyData(data)
+        const avg = data.reduce((a, b) => a + b, 0) / data.length
+        const elapsed = Date.now() - recordStart
+        if (avg > THRESHOLD) { hasSpeech = true; silenceStart = null }
+        else if (hasSpeech && elapsed > MIN_MS) {
+          if (!silenceStart) silenceStart = Date.now()
+          else if (Date.now() - silenceStart > SILENCE_MS) {
+            try { recorder.stop() } catch (_) {}
+            try { ctx.close() } catch (_) {}
+            return
+          }
+        }
+        requestAnimationFrame(check)
+      }
+      check()
+    } catch (_) {}
+  }
+
+  const startCall = async () => {
+    if (!selectedCharacter || callMode) return
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      callStreamRef.current = stream
+      callActiveRef.current = true
+      setCallMode(true)
+      setCallPhase('greeting')
+      setCallSeconds(0)
+      setCallTranscript([])
+      callTimerRef.current = setInterval(() => setCallSeconds(s => s + 1), 1000)
+      const greeting = `你好，我是${selectedCharacter.name}。${selectedCharacter.description}。很高兴与你通话，请说吧。`
+      await callSpeak(greeting)
+      if (callActiveRef.current) callListen(stream)
+    } catch (e) {
+      callActiveRef.current = false
+      setCallMode(false)
+      alert('无法访问麦克风，请检查浏览器权限')
     }
   }
 
@@ -405,6 +574,7 @@ function App() {
 
   // ── 对话页 ──────────────────────────────────────────────
   return (
+    <>
     <div className="min-h-screen bg-amber-50 flex flex-col">
       <header className="bg-white border-b border-amber-200 shadow-sm">
         <div className="max-w-6xl mx-auto px-6 py-3 flex items-center gap-3">
@@ -492,6 +662,14 @@ function App() {
                   <h2 className="font-bold text-gray-800 text-base">{selectedCharacter.name}</h2>
                   <p className="text-xs text-gray-400 truncate mt-0.5">{selectedCharacter.description}</p>
                 </div>
+                <button
+                  onClick={startCall}
+                  disabled={loading}
+                  title="语音通话"
+                  className="flex items-center gap-1.5 px-4 py-2 bg-green-500 hover:bg-green-600 disabled:bg-gray-200 text-white rounded-xl text-sm font-medium transition-colors shrink-0"
+                >
+                  <span>📞</span> 通话
+                </button>
               </div>
 
               {/* 消息列表 */}
@@ -616,6 +794,73 @@ function App() {
         </main>
       </div>
     </div>
+
+      {/* ── 通话模式全屏遮罩 ── */}
+      {callMode && selectedCharacter && (
+        <div className="fixed inset-0 z-50 flex flex-col items-center justify-between bg-gradient-to-b from-gray-900 via-amber-950 to-gray-900 px-6 py-10">
+          {/* 顶部：时长 */}
+          <div className="w-full flex justify-center">
+            <span className="text-white/50 text-sm tabular-nums">
+              {String(Math.floor(callSeconds / 60)).padStart(2, '0')}:{String(callSeconds % 60).padStart(2, '0')}
+            </span>
+          </div>
+
+          {/* 中间：头像 + 状态 */}
+          <div className="flex flex-col items-center gap-6">
+            <div className={`relative rounded-full ${
+              callPhase === 'speaking' ? 'ring-4 ring-amber-400 ring-offset-4 ring-offset-gray-900' :
+              callPhase === 'listening' ? 'ring-4 ring-green-400 ring-offset-4 ring-offset-gray-900' : ''
+            } transition-all duration-300`}>
+              <Avatar
+                name={selectedCharacter.name}
+                className={`w-28 h-28 text-4xl ${
+                  callPhase === 'speaking' ? 'animate-pulse' : ''
+                }`}
+              />
+              {callPhase === 'listening' && (
+                <span className="absolute -bottom-1 -right-1 w-5 h-5 bg-green-400 rounded-full border-2 border-gray-900 animate-pulse" />
+              )}
+            </div>
+            <div className="text-center">
+              <div className="text-white text-2xl font-bold">{selectedCharacter.name}</div>
+              <div className={`text-sm mt-1.5 ${
+                callPhase === 'speaking' ? 'text-amber-400' :
+                callPhase === 'listening' ? 'text-green-400' :
+                callPhase === 'processing' ? 'text-blue-300' : 'text-white/50'
+              }`}>
+                {callPhase === 'speaking' && '🔊 正在说话…'}
+                {callPhase === 'listening' && '🎙 正在聆听…'}
+                {callPhase === 'processing' && '💭 正在思考…'}
+                {callPhase === 'greeting' && '📞 正在接通…'}
+              </div>
+            </div>
+
+            {/* 通话记录预览（最近 4 条） */}
+            {callTranscript.length > 0 && (
+              <div className="w-full max-w-xs bg-white/5 rounded-2xl px-4 py-3 space-y-2 max-h-36 overflow-y-auto">
+                {callTranscript.slice(-4).map((t, i) => (
+                  <div key={i} className={`text-xs leading-snug ${
+                    t.role === 'user' ? 'text-white/70 text-right' : 'text-amber-300/80 text-left'
+                  }`}>
+                    <span className="opacity-50 mr-1">{t.role === 'user' ? '你' : selectedCharacter.name}：</span>
+                    {t.text.replace(/【[^】]*】/g, '').slice(0, 80)}{t.text.length > 80 ? '…' : ''}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* 底部：挂断按钮 */}
+          <button
+            onClick={endCall}
+            className="w-16 h-16 rounded-full bg-red-500 hover:bg-red-600 active:scale-95 text-white text-2xl flex items-center justify-center shadow-lg transition-all"
+            title="挂断"
+          >
+            📵
+          </button>
+        </div>
+      )}
+    </>
   )
 }
 
