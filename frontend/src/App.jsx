@@ -10,15 +10,8 @@ function getCategory(character) {
 
 const DYNASTIES = ['全部', '先秦', '秦汉', '三国', '两晋南北朝', '隋唐', '宋', '元', '明', '清', '近代']
 
-// 历史人物头像映射（Wikimedia Commons）
-const AVATAR_MAP = {
-  '孔子': 'https://upload.wikimedia.org/wikipedia/commons/thumb/1/1e/Konfuzius-1770.jpg/180px-Konfuzius-1770.jpg',
-  '李白': 'https://upload.wikimedia.org/wikipedia/commons/thumb/4/45/Li_Bai_in_a_landscape.jpg/180px-Li_Bai_in_a_landscape.jpg',
-  '诸葛亮': 'https://upload.wikimedia.org/wikipedia/commons/thumb/c/cf/Zhuge_Liang.jpg/180px-Zhuge_Liang.jpg',
-  '牛顿': 'https://upload.wikimedia.org/wikipedia/commons/thumb/3/39/GodfreyKneller-IsaacNewton-1689.jpg/180px-GodfreyKneller-IsaacNewton-1689.jpg',
-  '武则天': 'https://upload.wikimedia.org/wikipedia/commons/thumb/4/41/EmpressWuZetian.jpg/180px-EmpressWuZetian.jpg',
-  '爱因斯坦': 'https://upload.wikimedia.org/wikipedia/commons/thumb/d/d3/Albert_Einstein_Head.jpg/180px-Albert_Einstein_Head.jpg',
-}
+// 历史人物头像映射（Wikimedia Commons 在大陆可能被屏蔽，默认全部用文字头像）
+const AVATAR_MAP = {}
 
 function Avatar({ name, className = '' }) {
   const [imgError, setImgError] = useState(false)
