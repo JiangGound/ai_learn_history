@@ -199,6 +199,7 @@ function App() {
   // 通话模式
   const [callMode, setCallMode] = useState(false)
   const [callPhase, setCallPhase] = useState('idle') // 'greeting'|'listening'|'processing'|'speaking'
+  const [sidebarOpen, setSidebarOpen] = useState(false)
   const [callSeconds, setCallSeconds] = useState(0)
   const [callTranscript, setCallTranscript] = useState([])
   const mediaRecorderRef = useRef(null)
@@ -262,6 +263,7 @@ function App() {
       setMessages(data.messages)
       setConversationId(data._id)
       setPage('chat')
+      setSidebarOpen(false)
     } catch (e) {
       console.error('加载会话失败', e)
     }
@@ -627,29 +629,29 @@ function App() {
     return (
       <div className="min-h-screen bg-amber-50 flex flex-col">
         <header className="bg-white border-b border-amber-200 shadow-sm">
-          <div className="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between">
+          <div className="max-w-screen-xl mx-auto px-4 md:px-6 py-3 md:py-4 flex flex-wrap items-center justify-between gap-2">
             <div>
-              <h1 className="text-2xl font-bold text-amber-800">📜 历史人物 AI 对话</h1>
-              <p className="text-sm text-amber-400 mt-0.5">穿越时空，与历史对话</p>
+              <h1 className="text-xl md:text-2xl font-bold text-amber-800">📜 历史人物 AI 对话</h1>
+              <p className="text-xs md:text-sm text-amber-400 mt-0.5">穿越时空，与历史对话</p>
             </div>
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2 md:gap-3 flex-wrap">
               {conversations.length > 0 && (
                 <button
                   onClick={() => setPage('chat')}
-                  className="text-sm text-amber-600 hover:text-amber-800 border border-amber-200 hover:border-amber-400 px-4 py-2 rounded-xl transition-colors"
+                  className="text-xs md:text-sm text-amber-600 hover:text-amber-800 border border-amber-200 hover:border-amber-400 px-3 md:px-4 py-1.5 md:py-2 rounded-xl transition-colors"
                 >
                   💭 历史会话 ({conversations.length})
                 </button>
               )}
               <div className="flex items-center gap-2 text-sm text-gray-500">
-                <span>👤 {user?.nickname || user?.phone}</span>
+                <span className="text-xs md:text-sm truncate max-w-[100px] md:max-w-none">👤 {user?.nickname || user?.phone}</span>
                 <button onClick={handleLogout} className="text-xs text-gray-400 hover:text-red-400 transition-colors">退出</button>
               </div>
             </div>
           </div>
         </header>
 
-        <div className="max-w-5xl mx-auto w-full px-6 py-6 flex-1">
+        <div className="max-w-screen-xl mx-auto w-full px-4 md:px-6 py-4 md:py-6 flex-1">
             <div className="flex gap-3 mb-6 flex-wrap">
               <div className="relative flex-1 min-w-[180px] max-w-sm">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-amber-300">🔍</span>
@@ -701,7 +703,7 @@ function App() {
           {filtered.length === 0 ? (
             <div className="text-center text-amber-300 py-20">没有匹配的人物</div>
           ) : (
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-3 md:gap-4">
               {filtered.map(character => (
                 <button
                   key={character._id}
@@ -734,23 +736,34 @@ function App() {
   // ── 对话页 ──────────────────────────────────────────────
   return (
     <>
-    <div className="min-h-screen bg-amber-50 flex flex-col">
-      <header className="bg-white border-b border-amber-200 shadow-sm">
-        <div className="max-w-6xl mx-auto px-6 py-3 flex items-center justify-between gap-3">
-          <h1 className="text-xl font-bold text-amber-800">📜 历史人物 AI 对话</h1>
+    <div className="h-screen bg-amber-50 flex flex-col overflow-hidden">
+      <header className="bg-white border-b border-amber-200 shadow-sm shrink-0">
+        <div className="max-w-screen-xl mx-auto px-4 md:px-6 py-3 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setSidebarOpen(s => !s)}
+              className="md:hidden text-amber-600 hover:text-amber-800 p-1.5 rounded-xl hover:bg-amber-50 transition-colors text-lg leading-none"
+              title="菜单"
+            >☰</button>
+            <h1 className="text-lg md:text-xl font-bold text-amber-800">📜 历史人物 AI 对话</h1>
+          </div>
           <div className="flex items-center gap-2 text-sm text-gray-500">
-            <span>👤 {user?.nickname || user?.phone}</span>
-            <button onClick={handleLogout} className="text-xs text-gray-400 hover:text-red-400 transition-colors">退出</button>
+            <span className="text-xs md:text-sm truncate max-w-[80px] md:max-w-none">👤 {user?.nickname || user?.phone}</span>
+            <button onClick={handleLogout} className="text-xs text-gray-400 hover:text-red-400 transition-colors shrink-0">退出</button>
           </div>
         </div>
       </header>
 
-      <div className="max-w-6xl mx-auto w-full px-6 py-5 flex gap-5 flex-1">
+      <div className="max-w-screen-xl mx-auto w-full px-4 md:px-6 py-4 md:py-5 flex gap-0 md:gap-5 flex-1 min-h-0">
+        {/* 移动端侧栏遮罩 */}
+        {sidebarOpen && (
+          <div className="fixed inset-0 z-30 bg-black/40 md:hidden" onClick={() => setSidebarOpen(false)} />
+        )}
         {/* 左侧菜单栏 */}
-        <aside className="w-56 shrink-0 flex flex-col gap-3">
+        <aside className={`fixed inset-y-0 left-0 z-40 w-72 flex flex-col gap-3 bg-amber-50 border-r border-amber-200 px-4 py-4 overflow-y-auto transition-transform duration-300 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} md:relative md:inset-auto md:z-auto md:w-56 md:shrink-0 md:bg-transparent md:border-0 md:px-0 md:py-0 md:overflow-visible md:translate-x-0 md:transition-none`}>
           {/* 返回按钮 */}
           <button
-            onClick={() => setPage('characters')}
+            onClick={() => { setPage('characters'); setSidebarOpen(false) }}
             className="flex items-center gap-2 px-3 py-2.5 rounded-xl bg-white border border-amber-200 hover:border-amber-400 text-amber-700 hover:text-amber-900 text-sm font-medium transition-colors"
           >
             ← 选择人物
@@ -759,7 +772,7 @@ function App() {
           {/* 新对话按钮 */}
           {selectedCharacter && (
             <button
-              onClick={handleNewConversation}
+              onClick={() => { handleNewConversation(); setSidebarOpen(false) }}
               className="flex items-center gap-2 px-3 py-2.5 rounded-xl bg-amber-400 hover:bg-amber-500 text-white text-sm font-medium transition-colors"
             >
               ✏️ 新对话
@@ -804,9 +817,9 @@ function App() {
         </aside>
 
         {/* 主聊天区域 */}
-        <main className="flex-1 min-w-0">
+        <main className="flex-1 min-w-0 min-h-0 flex flex-col">
           {!selectedCharacter ? (
-            <div className="h-full flex flex-col items-center justify-center text-center py-24">
+            <div className="flex-1 flex flex-col items-center justify-center text-center">
               <div className="text-6xl mb-5">🏛️</div>
               <h2 className="text-xl font-semibold text-amber-800">请先选择一位历史人物</h2>
               <button
@@ -817,7 +830,7 @@ function App() {
               </button>
             </div>
           ) : (
-            <div className="bg-white rounded-2xl border border-amber-200 shadow-sm flex flex-col" style={{ height: 'calc(100vh - 140px)' }}>
+            <div className="bg-white rounded-2xl border border-amber-200 shadow-sm flex flex-col flex-1 min-h-0">
               {/* 对话头部 */}
               <div className="flex items-center gap-4 px-5 py-4 border-b border-amber-100">
                 <Avatar name={selectedCharacter.name} className="w-12 h-12 text-xl" />
@@ -836,7 +849,7 @@ function App() {
               </div>
 
               {/* 消息列表 */}
-              <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+              <div className="flex-1 min-h-0 overflow-y-auto px-5 py-4 space-y-4">
                 {messages.length === 0 && (
                   <div className="text-center text-amber-400 text-sm pt-10">
                     💬 向 {selectedCharacter.name} 打个招呼吧
