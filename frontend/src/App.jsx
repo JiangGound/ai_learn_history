@@ -200,6 +200,14 @@ function App() {
   const [callMode, setCallMode] = useState(false)
   const [callPhase, setCallPhase] = useState('idle') // 'greeting'|'listening'|'processing'|'speaking'
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  // 群聊
+  const [groupSelectedChars, setGroupSelectedChars] = useState([])
+  const [groupCharacters, setGroupCharacters] = useState([])
+  const [groupMessages, setGroupMessages] = useState([])
+  const [groupLoading, setGroupLoading] = useState(false)
+  const [groupSpeakerIdx, setGroupSpeakerIdx] = useState(null)
+  const [groupInput, setGroupInput] = useState('')
+  const [showPayModal, setShowPayModal] = useState(false)
   const [callSeconds, setCallSeconds] = useState(0)
   const [callTranscript, setCallTranscript] = useState([])
   const mediaRecorderRef = useRef(null)
@@ -212,6 +220,8 @@ function App() {
   const audioCtxRef = useRef(null)
   const callSessionRef = useRef({})
   const audioRef = useRef(null)
+  const callSpeakAbortRef = useRef(null)
+  const groupAbortRef = useRef(false)
   const messagesEndRef = useRef(null)
 
   const loadConversations = useCallback(() => {
@@ -230,7 +240,7 @@ function App() {
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, loading])
+  }, [messages, loading, groupMessages, groupLoading])
 
   const handleCharacterSelect = async (char) => {
     let character = char
@@ -427,7 +437,8 @@ function App() {
     clearInterval(callTimerRef.current)
     callStreamRef.current?.getTracks().forEach(t => t.stop())
     callStreamRef.current = null
-    // 停止所有正在播放的音频
+    // 停止所有正在播放的音频（含打断回调）
+    if (callSpeakAbortRef.current) { callSpeakAbortRef.current(); callSpeakAbortRef.current = null }
     if (audioRef.current) { audioRef.current.pause(); audioRef.current = null }
     window.speechSynthesis?.cancel()
     try { audioCtxRef.current?.close() } catch (_) {}
@@ -437,6 +448,11 @@ function App() {
     }
     setCallMode(false)
     setCallPhase('idle')
+  }
+
+  // 打断通话中正在播放的 AI 语音，立即开始聆听
+  const handleCallInterrupt = () => {
+    if (callSpeakAbortRef.current) callSpeakAbortRef.current()
   }
 
   // 通话中 TTS 朗读，使用后端 Edge TTS（与普通朗读一致的自然音质）
@@ -458,8 +474,11 @@ function App() {
       const url = URL.createObjectURL(blob)
       const audio = new Audio(url)
       audioRef.current = audio
-      audio.onended = () => { URL.revokeObjectURL(url); audioRef.current = null; resolve() }
-      audio.onerror = () => { URL.revokeObjectURL(url); audioRef.current = null; resolve() }
+      // 支持打断：将 resolve 暴露给 callSpeakAbortRef，点击打断时立即结束
+      const cleanup = () => { URL.revokeObjectURL(url); audioRef.current = null; callSpeakAbortRef.current = null; resolve() }
+      callSpeakAbortRef.current = () => { audio.pause(); cleanup() }
+      audio.onended = cleanup
+      audio.onerror = cleanup
       audio.play()
     } catch { resolve() }
   })
@@ -608,6 +627,44 @@ function App() {
     }
   }
 
+  // ── 群聊发送（依次获取每位人物的回复）──────────────────────
+  const handleGroupSend = async (msgText) => {
+    if (!msgText.trim() || groupLoading) return
+    groupAbortRef.current = false
+    setGroupInput('')
+    const userEntry = { role: 'user', content: msgText }
+    setGroupMessages(prev => [...prev, userEntry])
+    setGroupLoading(true)
+    const history = [...groupMessages, userEntry]
+    for (let i = 0; i < groupCharacters.length; i++) {
+      if (groupAbortRef.current) break
+      setGroupSpeakerIdx(i)
+      try {
+        const res = await fetch(`${API_BASE}/api/group-chat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          body: JSON.stringify({
+            characterIds: groupCharacters.map(c => c._id),
+            message: msgText,
+            conversationHistory: history.map(m => ({ role: m.role, content: m.content, speakerName: m.speakerName })),
+            speakerIndex: i
+          })
+        })
+        if (groupAbortRef.current) break
+        const data = await res.json()
+        if (groupAbortRef.current) break
+        const aiMsg = {
+          role: 'assistant', content: data.response,
+          speakerId: data.speakerId, speakerName: data.speakerName, speakerGender: data.speakerGender
+        }
+        setGroupMessages(prev => [...prev, aiMsg])
+        history.push(aiMsg)
+      } catch { break }
+    }
+    setGroupLoading(false)
+    setGroupSpeakerIdx(null)
+  }
+
   // ── 登录门禁 ─────────────────────────────────────────
   if (!authReady) {
     return (
@@ -617,6 +674,197 @@ function App() {
     )
   }
   if (!user) return <LoginPage onLogin={handleLogin} />
+
+  // ── 群聊选人页 ─────────────────────────────────────────
+  if (page === 'group-select') {
+    return (
+      <div className="h-screen bg-amber-50 flex flex-col overflow-hidden">
+        <header className="bg-white border-b border-amber-200 shadow-sm shrink-0">
+          <div className="max-w-screen-xl mx-auto px-4 md:px-6 py-3 md:py-4 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => { setPage('characters'); setGroupSelectedChars([]) }}
+                className="text-amber-600 hover:text-amber-800 text-sm border border-amber-200 hover:border-amber-400 px-3 py-1.5 rounded-xl transition-colors shrink-0"
+              >← 返回</button>
+              <div>
+                <h1 className="text-lg md:text-xl font-bold text-amber-800">👥 创建群聊</h1>
+                <p className="text-xs text-amber-400">选择 2-3 位历史人物同台对话</p>
+              </div>
+            </div>
+            <button
+              onClick={() => {
+                if (groupSelectedChars.length < 2) return
+                setGroupCharacters(groupSelectedChars)
+                setGroupMessages([])
+                setPage('group-chat')
+              }}
+              disabled={groupSelectedChars.length < 2}
+              className="shrink-0 px-5 py-2 bg-amber-500 hover:bg-amber-600 disabled:bg-amber-200 text-white rounded-xl text-sm font-semibold transition-colors"
+            >
+              开始群聊 ({groupSelectedChars.length}/3)
+            </button>
+          </div>
+        </header>
+        <div className="flex-1 overflow-y-auto max-w-screen-xl mx-auto w-full px-4 md:px-6 py-4">
+          <p className="text-xs text-amber-400 mb-4">点击人物卡片选择，最多 3 位</p>
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-3 md:gap-4">
+            {characters.map(character => {
+              const selected = groupSelectedChars.some(c => c._id === character._id)
+              const disabled = !selected && groupSelectedChars.length >= 3
+              return (
+                <button
+                  key={character._id}
+                  disabled={disabled}
+                  onClick={() => {
+                    if (selected) {
+                      setGroupSelectedChars(prev => prev.filter(c => c._id !== character._id))
+                    } else if (groupSelectedChars.length < 3) {
+                      setGroupSelectedChars(prev => [...prev, character])
+                    }
+                  }}
+                  className={`relative bg-white border rounded-2xl p-4 flex flex-col items-center gap-3 text-center transition-all ${
+                    selected
+                      ? 'border-amber-500 shadow-md ring-2 ring-amber-400 ring-offset-1'
+                      : disabled
+                      ? 'border-amber-100 opacity-40 cursor-not-allowed'
+                      : 'border-amber-100 hover:border-amber-400 hover:shadow-md'
+                  }`}
+                >
+                  {selected && (
+                    <div className="absolute top-2 right-2 w-5 h-5 bg-amber-500 rounded-full flex items-center justify-center">
+                      <span className="text-white text-xs font-bold">✓</span>
+                    </div>
+                  )}
+                  <Avatar name={character.name} className="w-14 h-14 text-2xl" />
+                  <div>
+                    <div className="font-semibold text-gray-800 text-sm">{character.name}</div>
+                    <div className="text-xs text-gray-400 mt-1 line-clamp-2 leading-relaxed">{character.description}</div>
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // ── 群聊对话页 ─────────────────────────────────────────
+  if (page === 'group-chat') {
+    const speakingChar = groupSpeakerIdx !== null ? groupCharacters[groupSpeakerIdx] : null
+    return (
+      <div className="h-screen bg-amber-50 flex flex-col overflow-hidden">
+        <header className="bg-white border-b border-amber-200 shadow-sm shrink-0">
+          <div className="max-w-screen-xl mx-auto px-4 md:px-6 py-3 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <button
+                onClick={() => { setPage('characters'); setGroupCharacters([]); setGroupMessages([]) }}
+                className="text-amber-600 hover:text-amber-800 text-sm border border-amber-200 px-3 py-1.5 rounded-xl transition-colors shrink-0"
+              >← 退出</button>
+              <div className="flex items-center -space-x-2 shrink-0">
+                {groupCharacters.map((c, i) => (
+                  <div key={c._id} style={{ zIndex: 10 - i }} className="relative">
+                    <Avatar name={c.name} className="w-8 h-8 text-xs ring-2 ring-white" />
+                  </div>
+                ))}
+              </div>
+              <div className="min-w-0">
+                <h1 className="text-sm md:text-base font-bold text-amber-800 truncate">
+                  {groupCharacters.map(c => c.name).join(' · ')}
+                </h1>
+                <p className="text-xs text-amber-400">跨越时空的对话</p>
+              </div>
+            </div>
+            <button
+              onClick={() => setShowPayModal(true)}
+              className="shrink-0 px-3 py-1.5 bg-gradient-to-r from-amber-400 to-amber-600 text-white rounded-xl text-xs font-semibold shadow-sm"
+            >
+              👑 会员
+            </button>
+          </div>
+        </header>
+
+        <div className="flex-1 min-h-0 overflow-y-auto max-w-screen-xl mx-auto w-full px-4 md:px-6 py-4 space-y-4">
+          {groupMessages.length === 0 && (
+            <div className="text-center text-amber-400 text-sm pt-16">
+              <div className="text-5xl mb-3">👥</div>
+              <p>发送消息，开启跨越时空的碰撞</p>
+              <div className="mt-4 flex justify-center gap-2 flex-wrap">
+                {groupCharacters.map(c => (
+                  <span key={c._id} className="text-xs bg-amber-100 text-amber-700 px-3 py-1.5 rounded-full">{c.name}</span>
+                ))}
+              </div>
+            </div>
+          )}
+          {groupMessages.map((msg, idx) => {
+            if (msg.role === 'user') {
+              return (
+                <div key={idx} className="flex flex-row-reverse gap-3">
+                  <div className="px-4 py-2.5 rounded-2xl rounded-tr-none text-sm leading-relaxed bg-amber-500 text-white max-w-[72%]">
+                    {msg.content}
+                  </div>
+                </div>
+              )
+            }
+            return (
+              <div key={idx} className="flex gap-3">
+                <Avatar name={msg.speakerName} className="w-8 h-8 text-xs mt-0.5 shrink-0" />
+                <div className="flex flex-col gap-1 max-w-[72%]">
+                  <div className="text-xs text-amber-600 font-medium px-1">{msg.speakerName}</div>
+                  <div className="px-4 py-2.5 rounded-2xl rounded-tl-none text-sm leading-relaxed bg-white border border-amber-100 text-gray-800">
+                    {renderContent(msg.content)}
+                  </div>
+                </div>
+              </div>
+            )
+          })}
+          {groupLoading && speakingChar && (
+            <div className="flex gap-3">
+              <Avatar name={speakingChar.name} className="w-8 h-8 text-xs mt-0.5 shrink-0" />
+              <div className="flex flex-col gap-1">
+                <div className="text-xs text-amber-600 font-medium px-1">{speakingChar.name}</div>
+                <div className="bg-white border border-amber-100 rounded-2xl rounded-tl-none px-4 py-2.5 text-sm text-amber-400">
+                  <span className="animate-pulse">正在思考…</span>
+                </div>
+              </div>
+            </div>
+          )}
+          <div ref={messagesEndRef} />
+        </div>
+
+        <div className="shrink-0 max-w-screen-xl mx-auto w-full px-4 md:px-6 py-3 border-t border-amber-100 bg-amber-50">
+          {groupLoading && (
+            <div className="flex justify-center mb-2">
+              <button
+                onClick={() => { groupAbortRef.current = true; setGroupLoading(false); setGroupSpeakerIdx(null) }}
+                className="text-xs text-red-400 hover:text-red-600 border border-red-200 hover:border-red-400 px-4 py-1.5 rounded-xl transition-colors"
+              >
+                ⏸ 打断发言
+              </button>
+            </div>
+          )}
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={groupInput}
+              onChange={e => setGroupInput(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && !e.shiftKey && handleGroupSend(groupInput)}
+              placeholder="向历史人物们提问…"
+              disabled={groupLoading}
+              className="flex-1 bg-white border border-amber-200 rounded-xl px-4 py-2.5 text-sm text-gray-800 placeholder-amber-300 focus:outline-none focus:ring-2 focus:ring-amber-400 disabled:opacity-50"
+            />
+            <button
+              onClick={() => handleGroupSend(groupInput)}
+              disabled={groupLoading || !groupInput.trim()}
+              className="bg-amber-500 hover:bg-amber-600 disabled:bg-amber-200 text-white px-5 py-2.5 rounded-xl text-sm font-semibold transition-colors"
+            >
+              发送
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   // ── 人物选择页 ─────────────────────────────────────────
   if (page === 'characters') {
@@ -643,6 +891,18 @@ function App() {
                   💭 历史会话 ({conversations.length})
                 </button>
               )}
+              <button
+                onClick={() => { setGroupSelectedChars([]); setPage('group-select') }}
+                className="text-xs md:text-sm text-amber-600 hover:text-amber-800 border border-amber-200 hover:border-amber-400 px-3 md:px-4 py-1.5 md:py-2 rounded-xl transition-colors"
+              >
+                👥 群聊
+              </button>
+              <button
+                onClick={() => setShowPayModal(true)}
+                className="text-xs md:text-sm bg-gradient-to-r from-amber-400 to-amber-500 hover:from-amber-500 hover:to-amber-600 text-white px-3 md:px-4 py-1.5 md:py-2 rounded-xl font-medium transition-all"
+              >
+                👑 会员
+              </button>
               <div className="flex items-center gap-2 text-sm text-gray-500">
                 <span className="text-xs md:text-sm truncate max-w-[100px] md:max-w-none">👤 {user?.nickname || user?.phone}</span>
                 <button onClick={handleLogout} className="text-xs text-gray-400 hover:text-red-400 transition-colors">退出</button>
@@ -1026,14 +1286,60 @@ function App() {
             )}
           </div>
 
-          {/* 底部：挂断按钮 */}
-          <button
-            onClick={endCall}
-            className="w-16 h-16 rounded-full bg-red-500 hover:bg-red-600 active:scale-95 text-white text-2xl flex items-center justify-center shadow-lg transition-all"
-            title="挂断"
+          {/* 底部：操作按钮 */}
+          <div className="flex items-center gap-8">
+            {callPhase === 'speaking' && (
+              <button
+                onClick={handleCallInterrupt}
+                className="w-14 h-14 rounded-full bg-amber-500 hover:bg-amber-600 active:scale-95 text-white text-2xl flex items-center justify-center shadow-lg transition-all"
+                title="打断"
+              >
+                ✋
+              </button>
+            )}
+            <button
+              onClick={endCall}
+              className="w-16 h-16 rounded-full bg-red-500 hover:bg-red-600 active:scale-95 text-white text-2xl flex items-center justify-center shadow-lg transition-all"
+              title="挂断"
+            >
+              📵
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── 付款码弹窗 ── */}
+      {showPayModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4"
+          onClick={() => setShowPayModal(false)}
+        >
+          <div
+            className="bg-white rounded-3xl shadow-2xl px-8 py-8 max-w-xs w-full text-center"
+            onClick={e => e.stopPropagation()}
           >
-            📵
-          </button>
+            <div className="text-4xl mb-2">👑</div>
+            <h2 className="text-xl font-bold text-amber-800 mb-1">解锁会员</h2>
+            <p className="text-xs text-gray-400 mb-5">扫码转账后评论备注手机号，手动开通</p>
+            <div className="bg-amber-50 rounded-2xl p-3 mb-4">
+              <img
+                src="/pay-qr.png"
+                alt="收款码"
+                className="w-full max-w-[180px] mx-auto rounded-xl"
+                onError={e => { e.target.style.display='none' }}
+              />
+              <p className="text-xs text-amber-400 mt-2">微信收款码</p>
+            </div>
+            <div className="space-y-1.5 text-xs text-gray-500 text-left bg-gray-50 rounded-xl p-3 mb-5">
+              <p>✅ 群聊功能（多位历史人物同台）</p>
+              <p>✅ 语音通话不限时长</p>
+              <p>✅ 无限对话次数</p>
+            </div>
+            <button
+              onClick={() => setShowPayModal(false)}
+              className="text-xs text-gray-400 hover:text-gray-600 transition-colors"
+            >关闭</button>
+          </div>
         </div>
       )}
     </>

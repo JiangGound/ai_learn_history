@@ -16,6 +16,7 @@ const conversationRoutes = require('./src/routes/conversationRoutes');
 const ttsRoutes = require('./src/routes/ttsRoutes');
 const asrRoutes = require('./src/routes/asrRoutes');
 const authRoutes = require('./src/routes/authRoutes');
+const groupChatRoutes = require('./src/routes/groupChatRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 8000;
@@ -33,6 +34,7 @@ app.use('/api/conversations', conversationRoutes);
 app.use('/api/tts', ttsRoutes);
 app.use('/api/asr', asrRoutes);
 app.use('/api/auth', authRoutes);
+app.use('/api/group-chat', groupChatRoutes);
 
 // 健康检查
 app.get('/health', (req, res) => {
