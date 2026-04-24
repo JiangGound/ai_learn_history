@@ -24,19 +24,7 @@ async function getTTS(voice) {
   return ttsInstances[voice];
 }
 
-async function synthesize(voice, text) {
-  const tts = await getTTS(voice);
-  const chunks = [];
-  const { audioStream } = tts.toStream(text);
-  await new Promise((resolve, reject) => {
-    audioStream.on('data', c => chunks.push(c));
-    audioStream.on('end', resolve);
-    audioStream.on('error', reject);
-  });
-  return Buffer.concat(chunks);
-}
-
-// POST /api/tts  { text, gender }
+// POST /api/tts  { text, gender }  — 流式返回音频，前端边收边播
 router.post('/', async (req, res) => {
   const { text, gender = 'male' } = req.body;
   if (!text) return res.status(400).json({ error: '缺少 text 参数' });
@@ -46,20 +34,34 @@ router.post('/', async (req, res) => {
 
   const voice = VOICE_MAP[gender] || VOICE_MAP.male;
 
+  const tryStream = async () => {
+    const tts = await getTTS(voice);
+    const { audioStream } = tts.toStream(cleanText);
+    return audioStream;
+  };
+
   try {
-    const buf = await synthesize(voice, cleanText);
-    res.json({ audio: buf.toString('base64') });
-  } catch (e) {
-    // 实例可能已断线，清除缓存后重试一次
-    console.warn('TTS 首次失败，重置实例重试:', e.message);
-    delete ttsInstances[voice];
+    let audioStream;
     try {
-      const buf = await synthesize(voice, cleanText);
-      res.json({ audio: buf.toString('base64') });
-    } catch (e2) {
-      console.error('TTS 重试失败:', e2.message);
-      res.status(500).json({ error: 'TTS 服务异常', detail: e2.message });
+      audioStream = await tryStream();
+    } catch (e) {
+      // 实例可能已断线，重置后重试
+      console.warn('TTS 首次失败，重置实例重试:', e.message);
+      delete ttsInstances[voice];
+      audioStream = await tryStream();
     }
+
+    res.setHeader('Content-Type', 'audio/mpeg');
+    res.setHeader('Transfer-Encoding', 'chunked');
+    audioStream.pipe(res);
+    audioStream.on('error', (e) => {
+      console.error('TTS stream error:', e.message);
+      if (!res.headersSent) res.status(500).end();
+      else res.end();
+    });
+  } catch (e) {
+    console.error('TTS 错误:', e.message);
+    res.status(500).json({ error: 'TTS 服务异常', detail: e.message });
   }
 });
 

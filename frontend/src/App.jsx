@@ -257,21 +257,20 @@ function App() {
     }
     setPlayingIndex(index)
     try {
+      // 后端流式返回 audio/mpeg，用 blob URL 立即播放
       const res = await fetch(`${API_BASE}/api/tts`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text, gender: selectedCharacter?.gender || 'male' })
       })
-      const data = await res.json()
-      if (data.audio) {
-        const audio = new Audio(`data:audio/mpeg;base64,${data.audio}`)
-        audioRef.current = audio
-        audio.onended = () => setPlayingIndex(null)
-        audio.onerror = () => setPlayingIndex(null)
-        audio.play()
-      } else {
-        setPlayingIndex(null)
-      }
+      if (!res.ok) { setPlayingIndex(null); return }
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const audio = new Audio(url)
+      audioRef.current = audio
+      audio.onended = () => { URL.revokeObjectURL(url); audioRef.current = null; setPlayingIndex(null) }
+      audio.onerror = () => { URL.revokeObjectURL(url); audioRef.current = null; setPlayingIndex(null) }
+      audio.play()
     } catch (e) {
       console.error('TTS 失败', e)
       setPlayingIndex(null)
