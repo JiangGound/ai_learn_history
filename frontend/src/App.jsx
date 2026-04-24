@@ -231,6 +231,7 @@ function App() {
   const groupAbortRef = useRef(false)
   const groupAutoRunRef = useRef(false)
   const groupCallActiveRef = useRef(false)
+  const groupCallInterruptedRef = useRef(false)
   const groupCallStreamRef = useRef(null)
   const groupCallTimerRef = useRef(null)
   const groupCallAudioCtxRef = useRef(null)
@@ -695,6 +696,7 @@ function App() {
 
   const endGroupCall = () => {
     groupCallActiveRef.current = false
+    groupCallInterruptedRef.current = false
     clearInterval(groupCallTimerRef.current)
     groupCallStreamRef.current?.getTracks().forEach(t => t.stop())
     groupCallStreamRef.current = null
@@ -735,12 +737,58 @@ function App() {
     } catch { resolve() }
   })
 
-  // 群通话：处理录音 → ASR → 每个角色回复+语音 → 重新聆听
+  // 群通话：根据上一句内容判断「被点名」角色，优先让其发言
+  const pickNextSpeaker = (chars, lastText, spokenIds) => {
+    const remaining = chars.filter(c => !spokenIds.has(c._id.toString()))
+    if (!remaining.length) return null
+    if (lastText) {
+      const mentioned = remaining.find(c => lastText.includes(c.name))
+      if (mentioned) return mentioned
+    }
+    return remaining[0]
+  }
+
+  // 群通话：单次发言 + 朗读，返回 { interrupted } 标志
+  const groupCallOneTurn = async (chars, speaker, userMsg, history) => {
+    if (!groupCallActiveRef.current || groupCallInterruptedRef.current) return { interrupted: true }
+    setGroupCallSpeaker(speaker)
+    setGroupCallPhase('speaking')
+    const speakerIndex = chars.findIndex(c => c._id.toString() === speaker._id.toString())
+    try {
+      const res = await fetch(`${API_BASE}/api/group-chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          characterIds: chars.map(c => c._id),
+          message: userMsg,
+          conversationHistory: history.map(m => ({ role: m.role, content: m.content, speakerName: m.speakerName })),
+          speakerIndex
+        })
+      })
+      if (!res.ok || !groupCallActiveRef.current) return { interrupted: true }
+      const data = await res.json()
+      if (!groupCallActiveRef.current) return { interrupted: true }
+      const aiMsg = { role: 'assistant', content: data.response, speakerName: data.speakerName, speakerGender: data.speakerGender }
+      setGroupMessages(prev => [...prev, aiMsg])
+      setGroupCallTranscript(prev => [...prev, { role: 'assistant', text: data.response, speakerName: data.speakerName }])
+      history.push(aiMsg)
+      await groupCallSpeak(data.response, data.speakerGender)
+      const interrupted = groupCallInterruptedRef.current
+      if (interrupted) groupCallInterruptedRef.current = false
+      return { interrupted, responseText: data.response }
+    } catch {
+      return { interrupted: true }
+    }
+  }
+
+  // 群通话：处理录音 → ASR → 各角色回复（含点名优先）→ 自由讨论 → 聆听
   const groupCallProcess = async (blob) => {
     if (!groupCallActiveRef.current) return
     setGroupCallPhase('processing')
     const session = groupCallSessionRef.current
+    const chars = session.groupCharacters
     try {
+      // ASR
       const formData = new FormData()
       formData.append('audio', blob, blob.type.includes('mp4') ? 'recording.mp4' : 'recording.webm')
       const asrRes = await fetch(`${API_BASE}/api/asr`, { method: 'POST', body: formData })
@@ -753,31 +801,42 @@ function App() {
       setGroupCallTranscript(prev => [...prev, { role: 'user', text: userText }])
       setGroupMessages(prev => [...prev, { role: 'user', content: userText }])
       const history = [...session.groupMessages, { role: 'user', content: userText }]
-      for (let i = 0; i < session.groupCharacters.length; i++) {
-        if (!groupCallActiveRef.current) break
-        const char = session.groupCharacters[i]
-        setGroupCallSpeaker(char)
-        setGroupCallPhase('speaking')
-        const res = await fetch(`${API_BASE}/api/group-chat`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            characterIds: session.groupCharacters.map(c => c._id),
-            message: userText,
-            conversationHistory: history.map(m => ({ role: m.role, content: m.content, speakerName: m.speakerName })),
-            speakerIndex: i
-          })
-        })
-        if (!res.ok || !groupCallActiveRef.current) break
-        const data = await res.json()
-        if (!groupCallActiveRef.current) break
-        const aiMsg = { role: 'assistant', content: data.response, speakerName: data.speakerName, speakerGender: data.speakerGender }
-        setGroupMessages(prev => [...prev, aiMsg])
-        setGroupCallTranscript(prev => [...prev, { role: 'assistant', text: data.response, speakerName: data.speakerName }])
-        history.push(aiMsg)
-        await groupCallSpeak(data.response, data.speakerGender)
+
+      // ── 阶段1：所有角色依次回复用户（含点名优先）───────────────────────────
+      const spokenIds = new Set()
+      let lastText = userText
+      while (spokenIds.size < chars.length && groupCallActiveRef.current) {
+        const speaker = pickNextSpeaker(chars, lastText, spokenIds)
+        if (!speaker) break
+        spokenIds.add(speaker._id.toString())
+        const { interrupted, responseText } = await groupCallOneTurn(chars, speaker, userText, history)
+        if (interrupted) { groupCallListen(groupCallStreamRef.current); return }
+        lastText = responseText
       }
-      if (groupCallActiveRef.current) groupCallListen(groupCallStreamRef.current)
+
+      // ── 阶段2：自由讨论（AI 互相持续对话，可被打断）──────────────────────────
+      let freeIdx = 0
+      let lastFreeText = lastText
+      while (groupCallActiveRef.current) {
+        if (groupCallInterruptedRef.current) {
+          groupCallInterruptedRef.current = false
+          groupCallListen(groupCallStreamRef.current)
+          return
+        }
+        // 点名优先：下个发言者
+        let nextChar = null
+        const mentionedFull = chars.find(c => lastFreeText?.includes(c.name))
+        if (mentionedFull) {
+          nextChar = mentionedFull
+          freeIdx = chars.findIndex(c => c._id.toString() === mentionedFull._id.toString())
+        } else {
+          nextChar = chars[freeIdx % chars.length]
+        }
+        freeIdx++
+        const { interrupted, responseText } = await groupCallOneTurn(chars, nextChar, '', history)
+        if (interrupted) { groupCallListen(groupCallStreamRef.current); return }
+        lastFreeText = responseText
+      }
     } catch {
       if (groupCallActiveRef.current) groupCallListen(groupCallStreamRef.current)
     }
@@ -1169,7 +1228,7 @@ function App() {
               groupCallPhase === 'processing' ? 'text-blue-300' : 'text-white/50'
             }`}>
               {groupCallPhase === 'speaking' && `🔊 ${groupCallSpeaker?.name ?? ''} 正在说话…`}
-              {groupCallPhase === 'listening' && '🎙 正在聆听…'}
+              {groupCallPhase === 'listening' && '🎙 正在聆听你的声音…'}
               {groupCallPhase === 'processing' && '💭 正在思考…'}
               {groupCallPhase === 'greeting' && '📞 正在接通…'}
             </div>
@@ -1189,9 +1248,12 @@ function App() {
           <div className="flex items-center gap-8">
             {groupCallPhase === 'speaking' && (
               <button
-                onClick={() => { if (callSpeakAbortRef.current) callSpeakAbortRef.current() }}
+                onClick={() => {
+                  groupCallInterruptedRef.current = true
+                  if (callSpeakAbortRef.current) callSpeakAbortRef.current()
+                }}
                 className="w-14 h-14 rounded-full bg-amber-500 hover:bg-amber-600 active:scale-95 text-white text-2xl flex items-center justify-center shadow-lg transition-all"
-                title="打断"
+                title="打断，立即聆听"
               >
                 ✋
               </button>

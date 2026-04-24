@@ -32,11 +32,16 @@ ${speaker.background || ''}${speaker.knowledgeBoundary || ''}
 现在轮到你发言，请：
 - 完全以${speaker.name}的口吻和历史视角自然回应当前话题
 - 可以回应或反驳其他历史人物的观点，制造时代碰撞感
+- 如果想和某位在场的历史人物直接对话，可以直接点名他们
 - 动作/神情用【】标注，放在段首（如【轻抚胡须，若有所思】）
-- 回复简洁自然，不超过120字
+- 回复简洁自然，不超过100字
 - 不要在回复里重复说自己的名字`;
 
-    // 历史消息格式：AI消息带说话人标注，让模型知道谁说了什么
+    // 无用户消息时为自由讨论模式，补充提示
+    const freeDiscussionHint = !message
+      ? [{ role: 'user', content: '（请继续自由讨论，延续刚才的话题，可主动向在场其他人物发问或表达观点）' }]
+      : [{ role: 'user', content: message }]
+
     const apiMessages = [
       { role: 'system', content: systemPrompt },
       ...conversationHistory.map(m => ({
@@ -45,7 +50,7 @@ ${speaker.background || ''}${speaker.knowledgeBoundary || ''}
           ? `[${m.speakerName}]: ${m.content}`
           : m.content
       })),
-      ...(message ? [{ role: 'user', content: message }] : [])
+      ...freeDiscussionHint
     ];
 
     const response = await callTongyiAPI(apiMessages);
