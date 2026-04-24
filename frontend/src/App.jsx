@@ -284,7 +284,9 @@ function App() {
     clearInterval(callTimerRef.current)
     callStreamRef.current?.getTracks().forEach(t => t.stop())
     callStreamRef.current = null
+    // 停止所有正在播放的音频
     if (audioRef.current) { audioRef.current.pause(); audioRef.current = null }
+    window.speechSynthesis?.cancel()
     try { audioCtxRef.current?.close() } catch (_) {}
     audioCtxRef.current = null
     if (mediaRecorderRef.current?.state !== 'inactive') {
@@ -294,29 +296,29 @@ function App() {
     setCallPhase('idle')
   }
 
-  // 通话中 TTS 朗读，使用浏览器 Web Speech API（零延迟，无需等后端）
-  const callSpeak = (text) => new Promise((resolve) => {
+  // 通话中 TTS 朗读，使用后端 Edge TTS（与普通朗读一致的自然音质）
+  const callSpeak = (text) => new Promise(async (resolve) => {
     if (!callActiveRef.current) return resolve()
     setCallPhase('speaking')
     const clean = text.replace(/【[^】]*】/g, '').trim()
     if (!clean) return resolve()
-    window.speechSynthesis.cancel()
-    const utter = new SpeechSynthesisUtterance(clean)
-    utter.lang = 'zh-CN'
-    utter.rate = 1.0
-    utter.pitch = callSessionRef.current.selectedCharacter?.gender === 'female' ? 1.15 : 0.9
-    // 等待语音列表加载后选取中文声音
-    const speak = () => {
-      const voices = window.speechSynthesis.getVoices()
-      const zhVoice = voices.find(v => v.lang.startsWith('zh') && v.localService) ||
-                      voices.find(v => v.lang.startsWith('zh'))
-      if (zhVoice) utter.voice = zhVoice
-      utter.onend = () => resolve()
-      utter.onerror = () => resolve()
-      window.speechSynthesis.speak(utter)
-    }
-    if (window.speechSynthesis.getVoices().length > 0) speak()
-    else { window.speechSynthesis.onvoiceschanged = speak }
+    const gender = callSessionRef.current.selectedCharacter?.gender || 'male'
+    try {
+      const res = await fetch(`${API_BASE}/api/tts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: clean, gender })
+      })
+      if (!res.ok || !callActiveRef.current) return resolve()
+      const blob = await res.blob()
+      if (!callActiveRef.current) return resolve()
+      const url = URL.createObjectURL(blob)
+      const audio = new Audio(url)
+      audioRef.current = audio
+      audio.onended = () => { URL.revokeObjectURL(url); audioRef.current = null; resolve() }
+      audio.onerror = () => { URL.revokeObjectURL(url); audioRef.current = null; resolve() }
+      audio.play()
+    } catch { resolve() }
   })
 
   // 通话中处理录音：ASR → Chat → TTS → 重新聆听
