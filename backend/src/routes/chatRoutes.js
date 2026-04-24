@@ -3,9 +3,10 @@ const router = express.Router();
 const https = require('https');
 const Character = require('../models/Character');
 const Conversation = require('../models/Conversation');
+const { optionalAuth } = require('../middleware/auth');
 
 // 对话处理
-router.post('/', async (req, res) => {
+router.post('/', optionalAuth, async (req, res) => {
   const { characterId, message, conversationId, conversationHistory = [] } = req.body;
 
   try {
@@ -42,10 +43,11 @@ router.post('/', async (req, res) => {
       );
     } else {
       conv = await Conversation.create({
+        userId:        req.user?._id || undefined,
         characterId,
         characterName: character.name,
-        title: message.slice(0, 30),
-        messages: newMsgs
+        title:         message.slice(0, 30),
+        messages:      newMsgs
       });
     }
 

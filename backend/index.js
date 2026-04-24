@@ -15,6 +15,7 @@ const dataRoutes = require('./src/routes/dataRoutes');
 const conversationRoutes = require('./src/routes/conversationRoutes');
 const ttsRoutes = require('./src/routes/ttsRoutes');
 const asrRoutes = require('./src/routes/asrRoutes');
+const authRoutes = require('./src/routes/authRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 8000;
@@ -31,6 +32,7 @@ app.use('/api/data', dataRoutes);
 app.use('/api/conversations', conversationRoutes);
 app.use('/api/tts', ttsRoutes);
 app.use('/api/asr', asrRoutes);
+app.use('/api/auth', authRoutes);
 
 // 健康检查
 app.get('/health', (req, res) => {

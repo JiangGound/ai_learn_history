@@ -3,6 +3,119 @@ import './App.css'
 
 const API_BASE = import.meta.env.VITE_API_BASE || ''
 
+// ── 登录页面 ─────────────────────────────────────────
+function LoginPage({ onLogin }) {
+  const [phone, setPhone]       = useState('')
+  const [code, setCode]         = useState('')
+  const [sending, setSending]   = useState(false)
+  const [verifying, setVerify]  = useState(false)
+  const [countdown, setCountdown] = useState(0)
+  const [devCode, setDevCode]   = useState('')  // 开发模式下显示验证码
+  const [error, setError]       = useState('')
+  const timerRef = useRef(null)
+
+  useEffect(() => () => clearInterval(timerRef.current), [])
+
+  const startCountdown = () => {
+    setCountdown(60)
+    timerRef.current = setInterval(() => {
+      setCountdown(c => { if (c <= 1) { clearInterval(timerRef.current); return 0 } return c - 1 })
+    }, 1000)
+  }
+
+  const handleSendCode = async () => {
+    if (!/^1[3-9]\d{9}$/.test(phone)) { setError('手机号格式不正确'); return }
+    setSending(true); setError('')
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/send-code`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone })
+      })
+      const data = await res.json()
+      if (!res.ok) { setError(data.error || '发送失败'); return }
+      startCountdown()
+      // 开发模式：显示返回的验证码
+      if (data.devCode) setDevCode(`测试验证码：${data.devCode}`)
+    } catch { setError('网络错误') }
+    finally { setSending(false) }
+  }
+
+  const handleVerify = async () => {
+    if (!code.trim()) { setError('请输入验证码'); return }
+    setVerify(true); setError('')
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/verify`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone, code })
+      })
+      const data = await res.json()
+      if (!res.ok) { setError(data.error || '验证失败'); return }
+      localStorage.setItem('token', data.token)
+      onLogin(data.user, data.token)
+    } catch { setError('网络错误') }
+    finally { setVerify(false) }
+  }
+
+  return (
+    <div className="min-h-screen bg-amber-50 flex items-center justify-center px-4">
+      <div className="w-full max-w-sm bg-white rounded-3xl shadow-lg border border-amber-100 px-8 py-10">
+        <div className="text-center mb-8">
+          <div className="text-5xl mb-3">📜</div>
+          <h1 className="text-2xl font-bold text-amber-800">历史人物 AI 对话</h1>
+          <p className="text-sm text-amber-400 mt-1">登录后可保存对话记录</p>
+        </div>
+
+        <div className="space-y-4">
+          {/* 手机号 */}
+          <div>
+            <label className="text-xs text-gray-500 mb-1 block">手机号</label>
+            <div className="flex gap-2">
+              <input
+                type="tel" maxLength={11} value={phone}
+                onChange={e => { setPhone(e.target.value); setError('') }}
+                placeholder="请输入手机号"
+                className="flex-1 bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
+              />
+              <button
+                onClick={handleSendCode}
+                disabled={sending || countdown > 0}
+                className="shrink-0 px-4 py-2.5 bg-amber-500 hover:bg-amber-600 disabled:bg-amber-200 text-white rounded-xl text-sm font-medium transition-colors whitespace-nowrap"
+              >
+                {sending ? '发送中…' : countdown > 0 ? `${countdown}s` : '获取验证码'}
+              </button>
+            </div>
+          </div>
+
+          {/* 验证码 */}
+          <div>
+            <label className="text-xs text-gray-500 mb-1 block">验证码</label>
+            <input
+              type="text" maxLength={6} value={code}
+              onChange={e => { setCode(e.target.value); setError('') }}
+              onKeyDown={e => e.key === 'Enter' && handleVerify()}
+              placeholder="6 位验证码"
+              className="w-full bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
+            />
+          </div>
+
+          {devCode && (
+            <p className="text-xs text-center text-green-600 bg-green-50 rounded-lg py-1.5">{devCode}</p>
+          )}
+          {error && <p className="text-xs text-red-500 text-center">{error}</p>}
+
+          <button
+            onClick={handleVerify}
+            disabled={verifying}
+            className="w-full bg-amber-500 hover:bg-amber-600 disabled:bg-amber-200 text-white py-3 rounded-xl font-semibold transition-colors"
+          >
+            {verifying ? '登录中…' : '登录 / 注册'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // 根据 dynasty 字段判断国内/国外
 function getCategory(character) {
   return character.dynasty ? '国内' : '国外'
@@ -41,6 +154,32 @@ function formatDate(dateStr) {
 }
 
 function App() {
+  // 登录状态
+  const [token, setToken]   = useState(() => localStorage.getItem('token') || '')
+  const [user, setUser]     = useState(null)
+  const [authReady, setAuthReady] = useState(false)
+
+  // 验证已保存的 token
+  useEffect(() => {
+    if (!token) { setAuthReady(true); return }
+    fetch(`${API_BASE}/api/auth/me`, { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => r.ok ? r.json() : null)
+      .then(u => { setUser(u); setAuthReady(true) })
+      .catch(() => setAuthReady(true))
+  }, [token])
+
+  const authHeaders = useCallback(() =>
+    token ? { Authorization: `Bearer ${token}` } : {}
+  , [token])
+
+  const handleLogin = (u, t) => { setUser(u); setToken(t) }
+
+  const handleLogout = () => {
+    localStorage.removeItem('token')
+    setToken(''); setUser(null)
+    setMessages([]); setConversationId(null); setConversations([])
+  }
+
   const [page, setPage] = useState('characters') // 'characters' | 'chat'
   const [characters, setCharacters] = useState([])
   const [selectedCharacter, setSelectedCharacter] = useState(null)
@@ -75,11 +214,11 @@ function App() {
   const messagesEndRef = useRef(null)
 
   const loadConversations = useCallback(() => {
-    fetch(`${API_BASE}/api/conversations`)
+    fetch(`${API_BASE}/api/conversations`, { headers: authHeaders() })
       .then(res => res.json())
       .then(data => setConversations(Array.isArray(data) ? data : []))
       .catch(() => {})
-  }, [])
+  }, [authHeaders])
 
   useEffect(() => {
     fetch(`${API_BASE}/api/characters`)
@@ -130,7 +269,9 @@ function App() {
 
   const handleDeleteConversation = async (e, convId) => {
     e.stopPropagation()
-    await fetch(`${API_BASE}/api/conversations/${convId}`, { method: 'DELETE' })
+    await fetch(`${API_BASE}/api/conversations/${convId}`, {
+      method: 'DELETE', headers: authHeaders()
+    })
     if (conversationId === convId) {
       setMessages([])
       setConversationId(null)
@@ -209,7 +350,7 @@ function App() {
       if (!asrText) { setLoading(false); return }
       const response = await fetch(`${API_BASE}/api/chat`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({
           characterId: selectedCharacter._id,
           message: asrText,
@@ -338,9 +479,9 @@ function App() {
       }
       setCallTranscript(prev => [...prev, { role: 'user', text: userText }])
       setMessages(prev => [...prev, { role: 'user', content: userText }])
-      const chatRes = await fetch(`${API_BASE}/api/chat`, {
+      const response = await fetch(`${API_BASE}/api/chat`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({
           characterId: session.selectedCharacter._id,
           message: userText,
@@ -348,7 +489,7 @@ function App() {
           conversationHistory: session.messages.map(m => ({ role: m.role, content: m.content }))
         })
       })
-      const chatData = await chatRes.json()
+      const chatData = await response.json()
       const aiText = chatData.response || ''
       if (!callActiveRef.current) return
       setMessages(prev => [...prev, { role: 'assistant', content: aiText }])
@@ -446,7 +587,7 @@ function App() {
     try {
       const response = await fetch(`${API_BASE}/api/chat`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({
           characterId: selectedCharacter._id,
           message: userMessage,
@@ -465,7 +606,17 @@ function App() {
     }
   }
 
-  // ── 人物选择页 ──────────────────────────────────────────
+  // ── 登录门禁 ─────────────────────────────────────────
+  if (!authReady) {
+    return (
+      <div className="min-h-screen bg-amber-50 flex items-center justify-center">
+        <div className="text-amber-400 text-sm animate-pulse">正在加载…</div>
+      </div>
+    )
+  }
+  if (!user) return <LoginPage onLogin={handleLogin} />
+
+  // ── 人物选择页 ─────────────────────────────────────────
   if (page === 'characters') {
     const filtered = characters.filter(c => {
       if (categoryFilter !== '全部' && getCategory(c) !== categoryFilter) return false
@@ -481,14 +632,20 @@ function App() {
               <h1 className="text-2xl font-bold text-amber-800">📜 历史人物 AI 对话</h1>
               <p className="text-sm text-amber-400 mt-0.5">穿越时空，与历史对话</p>
             </div>
-            {conversations.length > 0 && (
-              <button
-                onClick={() => setPage('chat')}
-                className="text-sm text-amber-600 hover:text-amber-800 border border-amber-200 hover:border-amber-400 px-4 py-2 rounded-xl transition-colors"
-              >
-                💭 历史会话 ({conversations.length})
-              </button>
-            )}
+            <div className="flex items-center gap-3">
+              {conversations.length > 0 && (
+                <button
+                  onClick={() => setPage('chat')}
+                  className="text-sm text-amber-600 hover:text-amber-800 border border-amber-200 hover:border-amber-400 px-4 py-2 rounded-xl transition-colors"
+                >
+                  💭 历史会话 ({conversations.length})
+                </button>
+              )}
+              <div className="flex items-center gap-2 text-sm text-gray-500">
+                <span>👤 {user?.nickname || user?.phone}</span>
+                <button onClick={handleLogout} className="text-xs text-gray-400 hover:text-red-400 transition-colors">退出</button>
+              </div>
+            </div>
           </div>
         </header>
 
@@ -579,8 +736,12 @@ function App() {
     <>
     <div className="min-h-screen bg-amber-50 flex flex-col">
       <header className="bg-white border-b border-amber-200 shadow-sm">
-        <div className="max-w-6xl mx-auto px-6 py-3 flex items-center gap-3">
+        <div className="max-w-6xl mx-auto px-6 py-3 flex items-center justify-between gap-3">
           <h1 className="text-xl font-bold text-amber-800">📜 历史人物 AI 对话</h1>
+          <div className="flex items-center gap-2 text-sm text-gray-500">
+            <span>👤 {user?.nickname || user?.phone}</span>
+            <button onClick={handleLogout} className="text-xs text-gray-400 hover:text-red-400 transition-colors">退出</button>
+          </div>
         </div>
       </header>
 
