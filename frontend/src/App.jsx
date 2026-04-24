@@ -665,6 +665,41 @@ function App() {
     setGroupSpeakerIdx(null)
   }
 
+  // ── 付款弹窗（共享，各页都可触发）──────────────────────
+  const payModalEl = showPayModal && (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 px-4"
+      onClick={() => setShowPayModal(false)}
+    >
+      <div
+        className="bg-white rounded-3xl shadow-2xl px-8 py-8 max-w-xs w-full text-center"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="text-4xl mb-2">👑</div>
+        <h2 className="text-xl font-bold text-amber-800 mb-1">解锁会员</h2>
+        <p className="text-xs text-gray-400 mb-5">扫码转账后评论备注手机号，手动开通</p>
+        <div className="bg-amber-50 rounded-2xl p-3 mb-4">
+          <img
+            src="/pay-qr.png"
+            alt="收款码"
+            className="w-full max-w-[180px] mx-auto rounded-xl"
+            onError={e => { e.target.style.display='none' }}
+          />
+          <p className="text-xs text-amber-400 mt-2">微信收款码</p>
+        </div>
+        <div className="space-y-1.5 text-xs text-gray-500 text-left bg-gray-50 rounded-xl p-3 mb-5">
+          <p>✅ 群聊功能（多位历史人物同台）</p>
+          <p>✅ 语音通话不限时长</p>
+          <p>✅ 无限对话次数</p>
+        </div>
+        <button
+          onClick={() => setShowPayModal(false)}
+          className="text-xs text-gray-400 hover:text-gray-600 transition-colors"
+        >关闭</button>
+      </div>
+    </div>
+  )
+
   // ── 登录门禁 ─────────────────────────────────────────
   if (!authReady) {
     return (
@@ -678,6 +713,7 @@ function App() {
   // ── 群聊选人页 ─────────────────────────────────────────
   if (page === 'group-select') {
     return (
+      <>
       <div className="h-screen bg-amber-50 flex flex-col overflow-hidden">
         <header className="bg-white border-b border-amber-200 shadow-sm shrink-0">
           <div className="max-w-screen-xl mx-auto px-4 md:px-6 py-3 md:py-4 flex items-center justify-between gap-3">
@@ -746,6 +782,8 @@ function App() {
           </div>
         </div>
       </div>
+      {payModalEl}
+      </>
     )
   }
 
@@ -753,6 +791,7 @@ function App() {
   if (page === 'group-chat') {
     const speakingChar = groupSpeakerIdx !== null ? groupCharacters[groupSpeakerIdx] : null
     return (
+      <>
       <div className="h-screen bg-amber-50 flex flex-col overflow-hidden">
         <header className="bg-white border-b border-amber-200 shadow-sm shrink-0">
           <div className="max-w-screen-xl mx-auto px-4 md:px-6 py-3 flex items-center justify-between gap-3">
@@ -863,6 +902,8 @@ function App() {
           </div>
         </div>
       </div>
+      {payModalEl}
+      </>
     )
   }
 
@@ -875,6 +916,7 @@ function App() {
       return true
     })
     return (
+      <>
       <div className="min-h-screen bg-amber-50 flex flex-col">
         <header className="bg-white border-b border-amber-200 shadow-sm">
           <div className="max-w-screen-xl mx-auto px-4 md:px-6 py-3 md:py-4 flex flex-wrap items-center justify-between gap-2">
@@ -893,7 +935,7 @@ function App() {
               )}
               <button
                 onClick={() => { setGroupSelectedChars([]); setPage('group-select') }}
-                className="text-xs md:text-sm text-amber-600 hover:text-amber-800 border border-amber-200 hover:border-amber-400 px-3 md:px-4 py-1.5 md:py-2 rounded-xl transition-colors"
+                className="text-xs md:text-sm bg-purple-500 hover:bg-purple-600 text-white px-3 md:px-4 py-1.5 md:py-2 rounded-xl font-medium transition-colors"
               >
                 👥 群聊
               </button>
@@ -912,6 +954,18 @@ function App() {
         </header>
 
         <div className="max-w-screen-xl mx-auto w-full px-4 md:px-6 py-4 md:py-6 flex-1">
+            {/* 群聊入口横幅 */}
+            <div
+              onClick={() => { setGroupSelectedChars([]); setPage('group-select') }}
+              className="w-full mb-5 cursor-pointer bg-gradient-to-r from-purple-50 to-amber-50 border border-purple-200 hover:border-purple-400 rounded-2xl px-5 py-3.5 flex items-center gap-4 transition-all hover:shadow-md"
+            >
+              <span className="text-3xl">👥</span>
+              <div className="flex-1 min-w-0">
+                <div className="font-semibold text-purple-800 text-sm">群聊模式 · 跨越时空的碰撞</div>
+                <div className="text-xs text-purple-400 mt-0.5 truncate">选 2-3 个历史人物同台对话，互相辩论</div>
+              </div>
+              <span className="text-purple-400 text-sm shrink-0">→</span>
+            </div>
             <div className="flex gap-3 mb-6 flex-wrap">
               <div className="relative flex-1 min-w-[180px] max-w-sm">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-amber-300">🔍</span>
@@ -990,6 +1044,8 @@ function App() {
           )}
         </div>
       </div>
+      {payModalEl}
+      </>
     )
   }
 
@@ -1308,40 +1364,7 @@ function App() {
         </div>
       )}
 
-      {/* ── 付款码弹窗 ── */}
-      {showPayModal && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4"
-          onClick={() => setShowPayModal(false)}
-        >
-          <div
-            className="bg-white rounded-3xl shadow-2xl px-8 py-8 max-w-xs w-full text-center"
-            onClick={e => e.stopPropagation()}
-          >
-            <div className="text-4xl mb-2">👑</div>
-            <h2 className="text-xl font-bold text-amber-800 mb-1">解锁会员</h2>
-            <p className="text-xs text-gray-400 mb-5">扫码转账后评论备注手机号，手动开通</p>
-            <div className="bg-amber-50 rounded-2xl p-3 mb-4">
-              <img
-                src="/pay-qr.png"
-                alt="收款码"
-                className="w-full max-w-[180px] mx-auto rounded-xl"
-                onError={e => { e.target.style.display='none' }}
-              />
-              <p className="text-xs text-amber-400 mt-2">微信收款码</p>
-            </div>
-            <div className="space-y-1.5 text-xs text-gray-500 text-left bg-gray-50 rounded-xl p-3 mb-5">
-              <p>✅ 群聊功能（多位历史人物同台）</p>
-              <p>✅ 语音通话不限时长</p>
-              <p>✅ 无限对话次数</p>
-            </div>
-            <button
-              onClick={() => setShowPayModal(false)}
-              className="text-xs text-gray-400 hover:text-gray-600 transition-colors"
-            >关闭</button>
-          </div>
-        </div>
-      )}
+      {payModalEl}
     </>
   )
 }
