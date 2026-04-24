@@ -232,6 +232,7 @@ function App() {
   const groupAutoRunRef = useRef(false)
   const groupCallActiveRef = useRef(false)
   const groupCallInterruptedRef = useRef(false)
+  const groupConvIdRef = useRef(null)
   const groupCallStreamRef = useRef(null)
   const groupCallTimerRef = useRef(null)
   const groupCallAudioCtxRef = useRef(null)
@@ -355,6 +356,28 @@ function App() {
   callSessionRef.current = { messages, conversationId, selectedCharacter }
   groupCallSessionRef.current = { groupMessages, groupCharacters }
   groupAutoRunRef.current = groupAutoRun
+
+  // 群聊会话保存函数
+  const saveGroupConversation = useCallback(async (msgs, chars) => {
+    if (!chars.length || !msgs.length) return
+    try {
+      const firstUserMsg = msgs.find(m => m.role === 'user')
+      const res = await fetch(`${API_BASE}/api/conversations`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({
+          conversationId: groupConvIdRef.current,
+          characterIds: chars.map(c => c._id),
+          characterNames: chars.map(c => c.name),
+          messages: msgs.map(m => ({ role: m.role, content: m.content, speakerName: m.speakerName })),
+          title: firstUserMsg?.content?.slice(0, 30) || chars.map(c => c.name).join(' · ')
+        })
+      })
+      const data = await res.json()
+      if (data.conversationId) groupConvIdRef.current = data.conversationId
+      loadConversations()
+    } catch (e) { console.error('保存群聊失败', e) }
+  }, [authHeaders, loadConversations])
 
   // 语音消息发送（异步，始终指向最新闭包）
   handleVoiceSendRef.current = async (blob, audioDataUrl, duration) => {
@@ -649,11 +672,12 @@ function App() {
     if (!autoRound && !msgText?.trim()) return
     groupAbortRef.current = false
     let history
+    let newUserMsg = null
     if (!autoRound) {
       setGroupInput('')
-      const userEntry = { role: 'user', content: msgText }
-      setGroupMessages(prev => [...prev, userEntry])
-      history = [...groupMessages, userEntry]
+      newUserMsg = { role: 'user', content: msgText }
+      setGroupMessages(prev => [...prev, newUserMsg])
+      history = [...groupMessages, newUserMsg]
     } else {
       history = [...groupMessages]
     }
@@ -686,6 +710,10 @@ function App() {
     }
     setGroupLoading(false)
     setGroupSpeakerIdx(null)
+    // 每轮结束后保存会话（只有用户发言时才保存，既避免过多保存）
+    if (!autoRound && !groupAbortRef.current) {
+      saveGroupConversation(history, chars)
+    }
     // 自由讨论：上一轮结束后自动开启下一轮
     if (!groupAbortRef.current && groupAutoRunRef.current) {
       setTimeout(() => handleGroupSend('', true), 600)
@@ -810,9 +838,15 @@ function App() {
         if (!speaker) break
         spokenIds.add(speaker._id.toString())
         const { interrupted, responseText } = await groupCallOneTurn(chars, speaker, userText, history)
-        if (interrupted) { groupCallListen(groupCallStreamRef.current); return }
+        if (interrupted) {
+          saveGroupConversation(history, chars)
+          groupCallListen(groupCallStreamRef.current)
+          return
+        }
         lastText = responseText
       }
+      // 第一阶段完成，保存一次
+      saveGroupConversation(history, chars)
 
       // ── 阶段2：自由讨论（AI 互相持续对话，可被打断）──────────────────────────
       let freeIdx = 0
@@ -901,6 +935,7 @@ function App() {
       setGroupCallPhase('greeting')
       setGroupCallSeconds(0)
       setGroupCallTranscript([])
+      groupConvIdRef.current = null
       groupCallTimerRef.current = setInterval(() => setGroupCallSeconds(s => s + 1), 1000)
       for (let i = 0; i < groupCharacters.length; i++) {
         if (!groupCallActiveRef.current) break
@@ -991,6 +1026,7 @@ function App() {
                 if (groupSelectedChars.length < 2) return
                 setGroupCharacters(groupSelectedChars)
                 setGroupMessages([])
+                groupConvIdRef.current = null
                 setPage('group-chat')
               }}
               disabled={groupSelectedChars.length < 2}
@@ -1479,7 +1515,7 @@ function App() {
                       : 'bg-white border-amber-100 hover:border-amber-300 hover:bg-amber-50'
                   }`}
                 >
-                  <Avatar name={conv.characterName} className="w-7 h-7 text-xs mt-0.5 shrink-0" />
+                  <Avatar name={conv.characterName?.[0] || '?'} className="w-7 h-7 text-xs mt-0.5 shrink-0" />
                   <div className="min-w-0 flex-1">
                     <div className="text-xs font-medium text-gray-800 truncate">{conv.title}</div>
                     <div className="text-[11px] text-gray-400 mt-0.5">{conv.characterName} · {formatDate(conv.updatedAt)}</div>

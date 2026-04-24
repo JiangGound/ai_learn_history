@@ -6,6 +6,44 @@ const { optionalAuth } = require('../middleware/auth');
 // 所有路由注入可选登录信息
 router.use(optionalAuth);
 
+// 创建或更新群聊会话（群聊/群通话专用）
+router.post('/', async (req, res) => {
+  const { conversationId, characterIds, characterNames, messages, title } = req.body;
+  if (!Array.isArray(messages) || !characterNames?.length) {
+    return res.status(400).json({ error: '缺少必要参数' });
+  }
+  try {
+    let conv;
+    if (conversationId) {
+      conv = await Conversation.findById(conversationId);
+      if (conv) {
+        // 权限检查
+        if (conv.userId && (!req.user || conv.userId.toString() !== req.user._id.toString())) {
+          return res.status(403).json({ error: '权限不足' });
+        }
+        conv.messages = messages;
+        conv.updatedAt = new Date();
+        await conv.save();
+        return res.json({ conversationId: conv._id });
+      }
+    }
+    // 新建群聊会话
+    conv = await Conversation.create({
+      userId:         req.user?._id || undefined,
+      characterId:    characterIds?.[0] || undefined,
+      characterName:  characterNames.join(' · '),
+      characterNames,
+      isGroup:        true,
+      title:          title || characterNames.join(' · '),
+      messages
+    });
+    res.json({ conversationId: conv._id });
+  } catch (err) {
+    console.error('保存群聊会话失败:', err);
+    res.status(500).json({ error: '服务器内部错误' });
+  }
+});
+
 // 获取会话列表（已登录：只返回自己的；未登录：返回无 userId 的公共记录）
 router.get('/', async (req, res) => {
   try {
