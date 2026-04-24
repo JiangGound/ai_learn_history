@@ -207,7 +207,14 @@ function App() {
   const [groupLoading, setGroupLoading] = useState(false)
   const [groupSpeakerIdx, setGroupSpeakerIdx] = useState(null)
   const [groupInput, setGroupInput] = useState('')
+  const [groupAutoRun, setGroupAutoRun] = useState(false)
   const [showPayModal, setShowPayModal] = useState(false)
+  // 群通话
+  const [groupCallMode, setGroupCallMode] = useState(false)
+  const [groupCallPhase, setGroupCallPhase] = useState('idle') // 'greeting'|'listening'|'processing'|'speaking'
+  const [groupCallSeconds, setGroupCallSeconds] = useState(0)
+  const [groupCallTranscript, setGroupCallTranscript] = useState([])
+  const [groupCallSpeaker, setGroupCallSpeaker] = useState(null)
   const [callSeconds, setCallSeconds] = useState(0)
   const [callTranscript, setCallTranscript] = useState([])
   const mediaRecorderRef = useRef(null)
@@ -222,6 +229,12 @@ function App() {
   const audioRef = useRef(null)
   const callSpeakAbortRef = useRef(null)
   const groupAbortRef = useRef(false)
+  const groupAutoRunRef = useRef(false)
+  const groupCallActiveRef = useRef(false)
+  const groupCallStreamRef = useRef(null)
+  const groupCallTimerRef = useRef(null)
+  const groupCallAudioCtxRef = useRef(null)
+  const groupCallSessionRef = useRef({})
   const messagesEndRef = useRef(null)
 
   const loadConversations = useCallback(() => {
@@ -339,6 +352,8 @@ function App() {
 
   // 通话模式：始终持有最新状态（解决异步闭包问题）
   callSessionRef.current = { messages, conversationId, selectedCharacter }
+  groupCallSessionRef.current = { groupMessages, groupCharacters }
+  groupAutoRunRef.current = groupAutoRun
 
   // 语音消息发送（异步，始终指向最新闭包）
   handleVoiceSendRef.current = async (blob, audioDataUrl, duration) => {
@@ -627,16 +642,23 @@ function App() {
     }
   }
 
-  // ── 群聊发送（依次获取每位人物的回复）──────────────────────
-  const handleGroupSend = async (msgText) => {
-    if (!msgText.trim() || groupLoading) return
+  // ── 群聊发送（依次获取每位人物的回复，支持自动轮转）──────────────
+  const handleGroupSend = async (msgText, autoRound = false) => {
+    if (groupLoading) return
+    if (!autoRound && !msgText?.trim()) return
     groupAbortRef.current = false
-    setGroupInput('')
-    const userEntry = { role: 'user', content: msgText }
-    setGroupMessages(prev => [...prev, userEntry])
+    let history
+    if (!autoRound) {
+      setGroupInput('')
+      const userEntry = { role: 'user', content: msgText }
+      setGroupMessages(prev => [...prev, userEntry])
+      history = [...groupMessages, userEntry]
+    } else {
+      history = [...groupMessages]
+    }
     setGroupLoading(true)
-    const history = [...groupMessages, userEntry]
-    for (let i = 0; i < groupCharacters.length; i++) {
+    const chars = groupCharacters
+    for (let i = 0; i < chars.length; i++) {
       if (groupAbortRef.current) break
       setGroupSpeakerIdx(i)
       try {
@@ -644,8 +666,8 @@ function App() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...authHeaders() },
           body: JSON.stringify({
-            characterIds: groupCharacters.map(c => c._id),
-            message: msgText,
+            characterIds: chars.map(c => c._id),
+            message: autoRound ? '' : msgText,
             conversationHistory: history.map(m => ({ role: m.role, content: m.content, speakerName: m.speakerName })),
             speakerIndex: i
           })
@@ -663,6 +685,177 @@ function App() {
     }
     setGroupLoading(false)
     setGroupSpeakerIdx(null)
+    // 自由讨论：上一轮结束后自动开启下一轮
+    if (!groupAbortRef.current && groupAutoRunRef.current) {
+      setTimeout(() => handleGroupSend('', true), 600)
+    }
+  }
+
+  // ── 群通话─────────────────────────────────────────
+
+  const endGroupCall = () => {
+    groupCallActiveRef.current = false
+    clearInterval(groupCallTimerRef.current)
+    groupCallStreamRef.current?.getTracks().forEach(t => t.stop())
+    groupCallStreamRef.current = null
+    if (callSpeakAbortRef.current) { callSpeakAbortRef.current(); callSpeakAbortRef.current = null }
+    if (audioRef.current) { audioRef.current.pause(); audioRef.current = null }
+    try { groupCallAudioCtxRef.current?.close() } catch (_) {}
+    groupCallAudioCtxRef.current = null
+    if (mediaRecorderRef.current?.state !== 'inactive') {
+      try { mediaRecorderRef.current?.stop() } catch (_) {}
+    }
+    setGroupCallMode(false)
+    setGroupCallPhase('idle')
+    setGroupCallSpeaker(null)
+  }
+
+  // 群通话 TTS，复用 callSpeakAbortRef 支持打断
+  const groupCallSpeak = (text, gender) => new Promise(async (resolve) => {
+    if (!groupCallActiveRef.current) return resolve()
+    const clean = text.replace(/【[^】]*】/g, '').trim()
+    if (!clean) return resolve()
+    try {
+      const res = await fetch(`${API_BASE}/api/tts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: clean, gender })
+      })
+      if (!res.ok || !groupCallActiveRef.current) return resolve()
+      const blob = await res.blob()
+      if (!groupCallActiveRef.current) return resolve()
+      const url = URL.createObjectURL(blob)
+      const audio = new Audio(url)
+      audioRef.current = audio
+      const cleanup = () => { URL.revokeObjectURL(url); audioRef.current = null; callSpeakAbortRef.current = null; resolve() }
+      callSpeakAbortRef.current = () => { audio.pause(); cleanup() }
+      audio.onended = cleanup
+      audio.onerror = cleanup
+      audio.play()
+    } catch { resolve() }
+  })
+
+  // 群通话：处理录音 → ASR → 每个角色回复+语音 → 重新聆听
+  const groupCallProcess = async (blob) => {
+    if (!groupCallActiveRef.current) return
+    setGroupCallPhase('processing')
+    const session = groupCallSessionRef.current
+    try {
+      const formData = new FormData()
+      formData.append('audio', blob, blob.type.includes('mp4') ? 'recording.mp4' : 'recording.webm')
+      const asrRes = await fetch(`${API_BASE}/api/asr`, { method: 'POST', body: formData })
+      const asrData = await asrRes.json()
+      const userText = asrData.text?.trim() || ''
+      if (!userText || !groupCallActiveRef.current) {
+        if (groupCallActiveRef.current) groupCallListen(groupCallStreamRef.current)
+        return
+      }
+      setGroupCallTranscript(prev => [...prev, { role: 'user', text: userText }])
+      setGroupMessages(prev => [...prev, { role: 'user', content: userText }])
+      const history = [...session.groupMessages, { role: 'user', content: userText }]
+      for (let i = 0; i < session.groupCharacters.length; i++) {
+        if (!groupCallActiveRef.current) break
+        const char = session.groupCharacters[i]
+        setGroupCallSpeaker(char)
+        setGroupCallPhase('speaking')
+        const res = await fetch(`${API_BASE}/api/group-chat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            characterIds: session.groupCharacters.map(c => c._id),
+            message: userText,
+            conversationHistory: history.map(m => ({ role: m.role, content: m.content, speakerName: m.speakerName })),
+            speakerIndex: i
+          })
+        })
+        if (!res.ok || !groupCallActiveRef.current) break
+        const data = await res.json()
+        if (!groupCallActiveRef.current) break
+        const aiMsg = { role: 'assistant', content: data.response, speakerName: data.speakerName, speakerGender: data.speakerGender }
+        setGroupMessages(prev => [...prev, aiMsg])
+        setGroupCallTranscript(prev => [...prev, { role: 'assistant', text: data.response, speakerName: data.speakerName }])
+        history.push(aiMsg)
+        await groupCallSpeak(data.response, data.speakerGender)
+      }
+      if (groupCallActiveRef.current) groupCallListen(groupCallStreamRef.current)
+    } catch {
+      if (groupCallActiveRef.current) groupCallListen(groupCallStreamRef.current)
+    }
+  }
+
+  // 群通话：聆听（静音检测）
+  const groupCallListen = (stream) => {
+    if (!groupCallActiveRef.current || !stream) return
+    setGroupCallPhase('listening')
+    setGroupCallSpeaker(null)
+    const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/mp4'
+    const chunks = []
+    let stopped = false
+    const recorder = new MediaRecorder(stream, { mimeType })
+    mediaRecorderRef.current = recorder
+    recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data) }
+    recorder.onstop = () => {
+      if (stopped) return
+      stopped = true
+      if (!groupCallActiveRef.current) return
+      if (chunks.length === 0) { groupCallListen(stream); return }
+      groupCallProcess(new Blob(chunks, { type: mimeType }))
+    }
+    recorder.start(100)
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)()
+      groupCallAudioCtxRef.current = ctx
+      const analyser = ctx.createAnalyser()
+      analyser.fftSize = 512
+      ctx.createMediaStreamSource(stream).connect(analyser)
+      const data = new Uint8Array(analyser.frequencyBinCount)
+      const recordStart = Date.now()
+      const MIN_MS = 1200; const THRESHOLD = 12; const SILENCE_MS = 2000
+      let silenceStart = null; let hasSpeech = false
+      const check = () => {
+        if (!groupCallActiveRef.current || recorder.state === 'inactive') return
+        analyser.getByteFrequencyData(data)
+        const avg = data.reduce((a, b) => a + b, 0) / data.length
+        const elapsed = Date.now() - recordStart
+        if (avg > THRESHOLD) { hasSpeech = true; silenceStart = null }
+        else if (hasSpeech && elapsed > MIN_MS) {
+          if (!silenceStart) silenceStart = Date.now()
+          else if (Date.now() - silenceStart > SILENCE_MS) {
+            try { recorder.stop() } catch (_) {}
+            try { ctx.close() } catch (_) {}
+            return
+          }
+        }
+        requestAnimationFrame(check)
+      }
+      check()
+    } catch (_) {}
+  }
+
+  const startGroupCall = async () => {
+    if (!groupCharacters.length || groupCallMode) return
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      groupCallStreamRef.current = stream
+      groupCallActiveRef.current = true
+      setGroupCallMode(true)
+      setGroupCallPhase('greeting')
+      setGroupCallSeconds(0)
+      setGroupCallTranscript([])
+      groupCallTimerRef.current = setInterval(() => setGroupCallSeconds(s => s + 1), 1000)
+      for (let i = 0; i < groupCharacters.length; i++) {
+        if (!groupCallActiveRef.current) break
+        const char = groupCharacters[i]
+        setGroupCallSpeaker(char)
+        const greeting = `你好，我是${char.name}，${char.description}。很高兴和大家一起对话。`
+        await groupCallSpeak(greeting, char.gender)
+      }
+      if (groupCallActiveRef.current) groupCallListen(stream)
+    } catch (e) {
+      groupCallActiveRef.current = false
+      setGroupCallMode(false)
+      alert('无法访问麦克风，请检查浏览器权限')
+    }
   }
 
   // ── 付款弹窗（共享，各页都可触发）──────────────────────
@@ -682,8 +875,15 @@ function App() {
           <img
             src="/pay-qr.png"
             alt="收款码"
-            className="w-full max-w-[180px] mx-auto rounded-xl"
-            onError={e => { e.target.style.display='none' }}
+            className="w-full max-w-[180px] mx-auto rounded-xl block"
+            onError={e => {
+              e.target.replaceWith(
+                Object.assign(document.createElement('div'), {
+                  className: 'w-[180px] h-[180px] mx-auto rounded-xl bg-amber-100 border-2 border-dashed border-amber-300 flex flex-col items-center justify-center gap-2 text-center p-4',
+                  innerHTML: '<div style="font-size:2rem">🖼️</div><p style="font-size:0.7rem;color:#b45309">收款码未上传<br/>请将图片放入<br/><b>frontend/public/pay-qr.png</b><br/>并推送到 GitHub</p>'
+                })
+              )
+            }}
           />
           <p className="text-xs text-amber-400 mt-2">微信收款码</p>
         </div>
@@ -814,12 +1014,20 @@ function App() {
                 <p className="text-xs text-amber-400">跨越时空的对话</p>
               </div>
             </div>
-            <button
-              onClick={() => setShowPayModal(true)}
-              className="shrink-0 px-3 py-1.5 bg-gradient-to-r from-amber-400 to-amber-600 text-white rounded-xl text-xs font-semibold shadow-sm"
-            >
-              👑 会员
-            </button>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                onClick={startGroupCall}
+                className="px-3 py-1.5 bg-green-500 hover:bg-green-600 text-white rounded-xl text-xs font-semibold transition-colors"
+              >
+                📞 群通话
+              </button>
+              <button
+                onClick={() => setShowPayModal(true)}
+                className="px-3 py-1.5 bg-gradient-to-r from-amber-400 to-amber-600 text-white rounded-xl text-xs font-semibold shadow-sm"
+              >
+                👑 会员
+              </button>
+            </div>
           </div>
         </header>
 
@@ -872,16 +1080,35 @@ function App() {
         </div>
 
         <div className="shrink-0 max-w-screen-xl mx-auto w-full px-4 md:px-6 py-3 border-t border-amber-100 bg-amber-50">
-          {groupLoading && (
-            <div className="flex justify-center mb-2">
+          <div className="flex items-center justify-between mb-2">
+            <button
+              onClick={() => {
+                const next = !groupAutoRun
+                setGroupAutoRun(next)
+                groupAutoRunRef.current = next
+                if (next && !groupLoading && groupMessages.length > 0) {
+                  handleGroupSend('', true)
+                } else if (!next) {
+                  groupAbortRef.current = true
+                }
+              }}
+              className={`text-xs px-4 py-1.5 rounded-xl font-medium transition-colors border ${
+                groupAutoRun
+                  ? 'bg-purple-500 text-white border-purple-500'
+                  : 'bg-white text-purple-600 border-purple-200 hover:border-purple-400'
+              }`}
+            >
+              {groupAutoRun ? '⏸ 暂停讨论' : '▶ 自由讨论'}
+            </button>
+            {groupLoading && (
               <button
-                onClick={() => { groupAbortRef.current = true; setGroupLoading(false); setGroupSpeakerIdx(null) }}
+                onClick={() => { groupAbortRef.current = true; setGroupLoading(false); setGroupSpeakerIdx(null); setGroupAutoRun(false) }}
                 className="text-xs text-red-400 hover:text-red-600 border border-red-200 hover:border-red-400 px-4 py-1.5 rounded-xl transition-colors"
               >
                 ⏸ 打断发言
               </button>
-            </div>
-          )}
+            )}
+          </div>
           <div className="flex gap-2">
             <input
               type="text"
@@ -903,6 +1130,82 @@ function App() {
         </div>
       </div>
       {payModalEl}
+
+      {/* ── 群通话全屏遮罩 ── */}
+      {groupCallMode && (
+        <div className="fixed inset-0 z-50 flex flex-col items-center justify-between bg-gradient-to-b from-gray-900 via-purple-950 to-gray-900 px-6 py-10">
+          <div className="w-full flex justify-center">
+            <span className="text-white/50 text-sm tabular-nums">
+              {String(Math.floor(groupCallSeconds / 60)).padStart(2, '0')}:{String(groupCallSeconds % 60).padStart(2, '0')}
+            </span>
+          </div>
+          <div className="flex flex-col items-center gap-6">
+            <div className="flex items-end gap-4">
+              {groupCharacters.map((c) => (
+                <div key={c._id} className={`flex flex-col items-center gap-2 transition-all duration-300 ${
+                  groupCallSpeaker?._id === c._id ? 'scale-110' : 'opacity-50 scale-95'
+                }`}>
+                  <div className={`rounded-full ${
+                    groupCallSpeaker?._id === c._id && groupCallPhase === 'speaking'
+                      ? 'ring-4 ring-purple-400 ring-offset-4 ring-offset-gray-900'
+                      : groupCallPhase === 'listening' && !groupCallSpeaker
+                      ? 'ring-4 ring-green-400 ring-offset-4 ring-offset-gray-900'
+                      : ''
+                  } transition-all`}>
+                    <Avatar
+                      name={c.name}
+                      className={`w-20 h-20 text-3xl ${
+                        groupCallSpeaker?._id === c._id && groupCallPhase === 'speaking' ? 'animate-pulse' : ''
+                      }`}
+                    />
+                  </div>
+                  <span className="text-xs text-white/70">{c.name}</span>
+                </div>
+              ))}
+            </div>
+            <div className={`text-sm ${
+              groupCallPhase === 'speaking' ? 'text-purple-400' :
+              groupCallPhase === 'listening' ? 'text-green-400' :
+              groupCallPhase === 'processing' ? 'text-blue-300' : 'text-white/50'
+            }`}>
+              {groupCallPhase === 'speaking' && `🔊 ${groupCallSpeaker?.name ?? ''} 正在说话…`}
+              {groupCallPhase === 'listening' && '🎙 正在聆听…'}
+              {groupCallPhase === 'processing' && '💭 正在思考…'}
+              {groupCallPhase === 'greeting' && '📞 正在接通…'}
+            </div>
+            {groupCallTranscript.length > 0 && (
+              <div className="w-full max-w-sm bg-white/5 rounded-2xl px-4 py-3 space-y-2 max-h-36 overflow-y-auto">
+                {groupCallTranscript.slice(-5).map((t, i) => (
+                  <div key={i} className={`text-xs leading-snug ${
+                    t.role === 'user' ? 'text-white/70 text-right' : 'text-purple-300/80 text-left'
+                  }`}>
+                    <span className="opacity-50 mr-1">{t.role === 'user' ? '你' : t.speakerName}：</span>
+                    {t.text?.replace(/【[^】]*】/g, '').slice(0, 60)}{(t.text?.length ?? 0) > 60 ? '…' : ''}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          <div className="flex items-center gap-8">
+            {groupCallPhase === 'speaking' && (
+              <button
+                onClick={() => { if (callSpeakAbortRef.current) callSpeakAbortRef.current() }}
+                className="w-14 h-14 rounded-full bg-amber-500 hover:bg-amber-600 active:scale-95 text-white text-2xl flex items-center justify-center shadow-lg transition-all"
+                title="打断"
+              >
+                ✋
+              </button>
+            )}
+            <button
+              onClick={endGroupCall}
+              className="w-16 h-16 rounded-full bg-red-500 hover:bg-red-600 active:scale-95 text-white text-2xl flex items-center justify-center shadow-lg transition-all"
+              title="挂断"
+            >
+              📵
+            </button>
+          </div>
+        </div>
+      )}
       </>
     )
   }
