@@ -963,8 +963,8 @@ function App() {
         onClick={e => e.stopPropagation()}
       >
         <div className="text-4xl mb-2">👑</div>
-        <h2 className="text-xl font-bold text-amber-800 mb-1">解锁会员</h2>
-        <p className="text-xs text-gray-400 mb-5">扫码转账后评论备注手机号，手动开通</p>
+        <h2 className="text-xl font-bold text-amber-800 mb-1">打赏</h2>
+        <p className="text-xs text-gray-400 mb-5">您的支持是我持续更新进步的动力，感谢老板！</p>
         <div className="bg-amber-50 rounded-2xl p-3 mb-4">
           <img
             src="/pay-qr.png"
@@ -1120,7 +1120,7 @@ function App() {
                 onClick={() => setShowPayModal(true)}
                 className="px-3 py-1.5 bg-gradient-to-r from-amber-400 to-amber-600 text-white rounded-xl text-xs font-semibold shadow-sm"
               >
-                👑 会员
+                👑 打赏
               </button>
             </div>
           </div>
@@ -1344,7 +1344,7 @@ function App() {
                 onClick={() => setShowPayModal(true)}
                 className="text-xs md:text-sm bg-gradient-to-r from-amber-400 to-amber-500 hover:from-amber-500 hover:to-amber-600 text-white px-3 md:px-4 py-1.5 md:py-2 rounded-xl font-medium transition-all"
               >
-                👑 会员
+                👑 打赏
               </button>
               <div className="flex items-center gap-2 text-sm text-gray-500">
                 <span className="text-xs md:text-sm truncate max-w-[100px] md:max-w-none">👤 {user?.nickname || user?.phone}</span>
