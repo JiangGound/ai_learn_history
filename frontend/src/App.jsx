@@ -281,11 +281,11 @@ function App() {
 
   const handleLoadConversation = async (conv) => {
     try {
-      const res = await fetch(`${API_BASE}/api/conversations/${conv._id}`)
+      const res = await fetch(`${API_BASE}/api/conversations/${conv._id}`, { headers: authHeaders() })
       const data = await res.json()
       const char = characters.find(c => c._id === data.characterId)
       if (char) setSelectedCharacter(char)
-      setMessages(data.messages)
+      setMessages(data.messages || [])
       setConversationId(data._id)
       setPage('chat')
       setSidebarOpen(false)
