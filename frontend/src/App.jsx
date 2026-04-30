@@ -981,11 +981,6 @@ function App() {
           />
           <p className="text-xs text-amber-400 mt-2">微信收款码</p>
         </div>
-        <div className="space-y-1.5 text-xs text-gray-500 text-left bg-gray-50 rounded-xl p-3 mb-5">
-          <p>✅ 群聊功能（多位历史人物同台）</p>
-          <p>✅ 语音通话不限时长</p>
-          <p>✅ 无限对话次数</p>
-        </div>
         <button
           onClick={() => setShowPayModal(false)}
           className="text-xs text-gray-400 hover:text-gray-600 transition-colors"
