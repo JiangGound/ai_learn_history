@@ -24,7 +24,7 @@ async function statsAuth(req, res, next) {
     if (!authHeader?.startsWith('Bearer ')) return res.status(401).json({ error: '未登录' });
     const token = authHeader.slice(7);
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'ai_history_secret_change_in_prod');
-    const user = await User.findById(decoded.userId).lean();
+    const user = await User.findById(decoded._id || decoded.userId).lean();
     if (!user || user.phone !== ADMIN_PHONE) return res.status(403).json({ error: '无权限' });
     next();
   } catch {
