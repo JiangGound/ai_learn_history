@@ -17,6 +17,8 @@ const ttsRoutes = require('./src/routes/ttsRoutes');
 const asrRoutes = require('./src/routes/asrRoutes');
 const authRoutes = require('./src/routes/authRoutes');
 const groupChatRoutes = require('./src/routes/groupChatRoutes');
+const statsRoutes = require('./src/routes/statsRoutes');
+const visitLogger = require('./src/middleware/visitLogger');
 
 const app = express();
 const PORT = process.env.PORT || 8000;
@@ -25,6 +27,7 @@ const PORT = process.env.PORT || 8000;
 app.use(cors());
 app.use(express.json({ limit: '20mb' }));
 app.use(express.urlencoded({ extended: true, limit: '20mb' }));
+app.use(visitLogger);
 
 // 路由
 app.use('/api/characters', characterRoutes);
@@ -35,6 +38,7 @@ app.use('/api/tts', ttsRoutes);
 app.use('/api/asr', asrRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/group-chat', groupChatRoutes);
+app.use('/api/stats', statsRoutes);
 
 // 健康检查
 app.get('/health', (req, res) => {

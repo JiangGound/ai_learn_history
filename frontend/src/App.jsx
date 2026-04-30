@@ -116,7 +116,168 @@ function LoginPage({ onLogin }) {
   )
 }
 
-// 根据 dynasty 字段判断国内/国外
+// ── 管理员页面 ───────────────────────────────────────
+const FEATURE_LABELS = {
+  'chat': '单人对话', 'group-chat': '群聊', 'tts': '文字转语音',
+  'asr': '语音识别', 'characters': '历史人物', 'conversations': '对话记录',
+  'auth': '用户认证', 'data': '数据采集',
+}
+
+function AdminPage({ token, onBack }) {
+  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10))
+  const [stats, setStats] = useState(null)
+  const [recent, setRecent] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  const fetchStats = async (d) => {
+    setLoading(true); setError('')
+    try {
+      const headers = { Authorization: `Bearer ${token}` }
+      const [dayRes, recentRes] = await Promise.all([
+        fetch(`${API_BASE}/api/stats?date=${d}`, { headers }),
+        fetch(`${API_BASE}/api/stats/recent?days=7`, { headers }),
+      ])
+      if (!dayRes.ok) { const e = await dayRes.json(); setError(e.error || '获取失败'); return }
+      setStats(await dayRes.json())
+      setRecent(await recentRes.json())
+    } catch { setError('网络错误') }
+    finally { setLoading(false) }
+  }
+
+  useEffect(() => { fetchStats(date) }, [date])
+
+  const shiftDate = (delta) => {
+    const d = new Date(date); d.setDate(d.getDate() + delta)
+    setDate(d.toISOString().slice(0, 10))
+  }
+
+  const maxHour = stats ? Math.max(...stats.hourlyDistribution, 1) : 1
+
+  return (
+    <div className="min-h-screen bg-amber-50">
+      <header className="bg-white border-b border-amber-200 shadow-sm sticky top-0 z-10">
+        <div className="max-w-screen-lg mx-auto px-4 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <button onClick={onBack} className="text-amber-600 hover:text-amber-800 text-sm border border-amber-200 hover:border-amber-400 px-3 py-1.5 rounded-xl transition-colors">← 返回</button>
+            <h1 className="text-lg font-bold text-amber-800">📊 访问统计</h1>
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={() => shiftDate(-1)} className="w-8 h-8 rounded-lg border border-amber-200 hover:border-amber-400 text-amber-600 flex items-center justify-center text-sm transition-colors">‹</button>
+            <input type="date" value={date} onChange={e => setDate(e.target.value)}
+              className="text-sm border border-amber-200 rounded-xl px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-amber-400 bg-amber-50" />
+            <button onClick={() => shiftDate(1)} disabled={date >= new Date().toISOString().slice(0,10)}
+              className="w-8 h-8 rounded-lg border border-amber-200 hover:border-amber-400 disabled:opacity-30 text-amber-600 flex items-center justify-center text-sm transition-colors">›</button>
+          </div>
+        </div>
+      </header>
+
+      <div className="max-w-screen-lg mx-auto px-4 py-6 space-y-6">
+        {error && <div className="bg-red-50 border border-red-200 text-red-600 rounded-2xl px-5 py-3 text-sm">{error}</div>}
+        {loading && <div className="text-center text-amber-400 text-sm animate-pulse py-10">加载中…</div>}
+
+        {stats && !loading && (
+          <>
+            {/* 核心指标卡 */}
+            <div className="grid grid-cols-3 gap-3">
+              {[
+                { label: '总请求数', value: stats.totalRequests, icon: '📈' },
+                { label: '独立访客', value: stats.uniqueVisitors, icon: '👥' },
+                { label: '登录用户', value: stats.loggedInUsers, icon: '🔑' },
+              ].map(item => (
+                <div key={item.label} className="bg-white border border-amber-100 rounded-2xl p-4 text-center shadow-sm">
+                  <div className="text-2xl mb-1">{item.icon}</div>
+                  <div className="text-2xl font-bold text-amber-700">{item.value}</div>
+                  <div className="text-xs text-gray-400 mt-0.5">{item.label}</div>
+                </div>
+              ))}
+            </div>
+
+            {/* 功能使用排名 */}
+            <div className="bg-white border border-amber-100 rounded-2xl p-5 shadow-sm">
+              <h2 className="text-sm font-semibold text-amber-800 mb-4">功能使用排名</h2>
+              {stats.topFeatures.length === 0
+                ? <div className="text-center text-amber-300 text-sm py-4">暂无数据</div>
+                : (
+                  <div className="space-y-3">
+                    {stats.topFeatures.map((f, i) => {
+                      const pct = stats.totalRequests > 0 ? Math.round(f.count / stats.totalRequests * 100) : 0
+                      return (
+                        <div key={f.feature} className="flex items-center gap-3">
+                          <span className="w-5 text-xs text-amber-400 font-mono text-right shrink-0">{i + 1}</span>
+                          <span className="w-20 text-xs text-gray-600 shrink-0">{f.label}</span>
+                          <div className="flex-1 bg-amber-50 rounded-full h-4 overflow-hidden">
+                            <div className="h-4 rounded-full bg-amber-400 transition-all" style={{ width: `${pct}%` }} />
+                          </div>
+                          <span className="w-14 text-xs text-gray-500 text-right shrink-0">{f.count} 次 ({pct}%)</span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )
+              }
+            </div>
+
+            {/* 24小时分布 */}
+            <div className="bg-white border border-amber-100 rounded-2xl p-5 shadow-sm">
+              <h2 className="text-sm font-semibold text-amber-800 mb-4">24 小时访问分布</h2>
+              <div className="flex items-end gap-[2px] h-20">
+                {stats.hourlyDistribution.map((v, h) => (
+                  <div key={h} className="flex-1 flex flex-col items-center gap-0.5 group relative">
+                    <div
+                      className="w-full rounded-t bg-amber-300 hover:bg-amber-500 transition-colors cursor-default"
+                      style={{ height: `${Math.round(v / maxHour * 64)}px`, minHeight: v > 0 ? '2px' : '0' }}
+                      title={`${h}时: ${v}次`}
+                    />
+                    {(h % 4 === 0) && (
+                      <span className="text-[9px] text-gray-300 absolute -bottom-4">{h}时</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <div className="mt-5 text-xs text-gray-400 text-right">
+                峰值：{stats.hourlyDistribution.indexOf(Math.max(...stats.hourlyDistribution))} 时（{Math.max(...stats.hourlyDistribution)} 次）
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* 最近 7 天趋势 */}
+        {recent && !loading && (
+          <div className="bg-white border border-amber-100 rounded-2xl p-5 shadow-sm">
+            <h2 className="text-sm font-semibold text-amber-800 mb-4">最近 7 天趋势</h2>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs text-gray-600">
+                <thead>
+                  <tr className="text-amber-400 border-b border-amber-100">
+                    <th className="text-left py-2 pr-3 font-medium">日期</th>
+                    <th className="text-right py-2 px-3 font-medium">请求数</th>
+                    <th className="text-right py-2 px-3 font-medium">访客数</th>
+                    <th className="text-left py-2 pl-3 font-medium">最热功能</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {recent.summary.map(row => (
+                    <tr key={row.date}
+                      onClick={() => setDate(row.date)}
+                      className={`border-b border-amber-50 cursor-pointer transition-colors hover:bg-amber-50 ${row.date === date ? 'bg-amber-50 font-semibold' : ''}`}>
+                      <td className="py-2 pr-3">{row.date}</td>
+                      <td className="py-2 px-3 text-right">{row.totalRequests}</td>
+                      <td className="py-2 px-3 text-right">{row.uniqueVisitors}</td>
+                      <td className="py-2 pl-3 text-amber-600">{row.topFeatureLabel || '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── 根据 dynasty 字段判断国内/国外
 function getCategory(character) {
   return character.dynasty ? '国内' : '国外'
 }
@@ -999,6 +1160,15 @@ function App() {
   }
   if (!user) return <LoginPage onLogin={handleLogin} />
 
+  // ── 管理员统计页 ─────────────────────────────────────────
+  if (page === 'admin') {
+    if (user?.phone !== '15502236175') {
+      setPage('characters')
+      return null
+    }
+    return <AdminPage token={token} onBack={() => setPage('characters')} />
+  }
+
   // ── 群聊选人页 ─────────────────────────────────────────
   if (page === 'group-select') {
     return (
@@ -1341,6 +1511,14 @@ function App() {
               >
                 👑 打赏
               </button>
+              {user?.phone === '15502236175' && (
+                <button
+                  onClick={() => setPage('admin')}
+                  className="text-xs md:text-sm bg-gray-700 hover:bg-gray-800 text-white px-3 md:px-4 py-1.5 md:py-2 rounded-xl font-medium transition-colors"
+                >
+                  🛡️ 管理
+                </button>
+              )}
               <div className="flex items-center gap-2 text-sm text-gray-500">
                 <span className="text-xs md:text-sm truncate max-w-[100px] md:max-w-none">👤 {user?.nickname || user?.phone}</span>
                 <button onClick={handleLogout} className="text-xs text-gray-400 hover:text-red-400 transition-colors">退出</button>
