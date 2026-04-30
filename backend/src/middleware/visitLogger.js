@@ -31,7 +31,7 @@ function getUserIdFromToken(req) {
     if (!authHeader?.startsWith('Bearer ')) return null;
     const token = authHeader.slice(7);
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'ai_history_secret_change_in_prod');
-    return decoded.userId || decoded.id || null;
+    return decoded._id || decoded.userId || decoded.id || null;
   } catch {
     return null;
   }
